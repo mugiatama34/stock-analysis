@@ -200,6 +200,94 @@ def test_instant_chain_prefers_priority_tag_when_both_report_same_quarter():
     assert resolved["2023-03-31"] == {"val": 500, "tag": "LongTermDebtNoncurrent"}
 
 
+def test_instant_chain_subtracts_current_portion_to_avoid_double_count():
+    # F/GM deseni: sirket bu ceyrek icin LongTermDebtNoncurrent yerine
+    # LongTermDebt kullanmis (zincirin yedek etiketi) VE ayni ceyrekte
+    # LongTermDebtCurrent (short_term_debt'in bir bileseni) de raporlanmis.
+    # LongTermDebt US-GAAP'ta cari kismi ZATEN icerir - fark alinmazsa cari
+    # kisim total_debt'te iki kez sayilir (bkz. config.py long_term_debt
+    # subtract_when_using aciklamasi).
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "LongTermDebt": {"units": {"USD": [
+                    _instant("2023-03-31", 1000, "10-Q", "2023-05-01"),
+                ]}},
+                "LongTermDebtCurrent": {"units": {"USD": [
+                    _instant("2023-03-31", 150, "10-Q", "2023-05-01"),
+                ]}},
+            }
+        }
+    }
+    resolved = edgar._resolve_instant_metric(
+        companyfacts,
+        {
+            "mode": "chain",
+            "tags": ["LongTermDebtNoncurrent", "LongTermDebt"],
+            "subtract_when_using": {"LongTermDebt": "LongTermDebtCurrent"},
+        },
+        {"2023-03-31"},
+    )
+
+    # 1000 - 150 = 850: artik LongTermDebtNoncurrent ile ayni kapsamda.
+    assert resolved["2023-03-31"] == {"val": 850, "tag": "LongTermDebt"}
+
+
+def test_instant_chain_subtract_noop_when_current_portion_absent():
+    # AAPL 2015 deseni: LongTermDebt kullanildi ama LongTermDebtCurrent o
+    # ceyrek icin hic raporlanmamis (sirketin cari vadeli borcu yok) -
+    # cikaracak bir sey olmadigi icin deger degismemeli.
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "LongTermDebt": {"units": {"USD": [
+                    _instant("2015-03-28", 1000, "10-Q", "2015-05-01"),
+                ]}},
+            }
+        }
+    }
+    resolved = edgar._resolve_instant_metric(
+        companyfacts,
+        {
+            "mode": "chain",
+            "tags": ["LongTermDebtNoncurrent", "LongTermDebt"],
+            "subtract_when_using": {"LongTermDebt": "LongTermDebtCurrent"},
+        },
+        {"2015-03-28"},
+    )
+
+    assert resolved["2015-03-28"] == {"val": 1000, "tag": "LongTermDebt"}
+
+
+def test_instant_chain_subtract_does_not_apply_to_primary_tag():
+    # subtract_when_using SADECE haritada belirtilen etikete (yedek) uygulanir
+    # - zincirin birincil etiketi (LongTermDebtNoncurrent) zaten cari kismi
+    # HARIC TUTTUGU icin cikarma islemi uygulanmamali.
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "LongTermDebtNoncurrent": {"units": {"USD": [
+                    _instant("2023-03-31", 500, "10-Q", "2023-05-01"),
+                ]}},
+                "LongTermDebtCurrent": {"units": {"USD": [
+                    _instant("2023-03-31", 150, "10-Q", "2023-05-01"),
+                ]}},
+            }
+        }
+    }
+    resolved = edgar._resolve_instant_metric(
+        companyfacts,
+        {
+            "mode": "chain",
+            "tags": ["LongTermDebtNoncurrent", "LongTermDebt"],
+            "subtract_when_using": {"LongTermDebt": "LongTermDebtCurrent"},
+        },
+        {"2023-03-31"},
+    )
+
+    assert resolved["2023-03-31"] == {"val": 500, "tag": "LongTermDebtNoncurrent"}
+
+
 def test_comparative_fact_mislabeled_with_filing_fy_fp_does_not_corrupt_period():
     # Gercek AAPL verisinde gozlemlenen desen: bir filing'in icindeki
     # KARSILASTIRMALI (bir onceki yilin ayni ceyregi) fact, kendi donemi
@@ -471,3 +559,43 @@ def test_sum_primary_tag_used_alone_ignoring_components():
 
     assert q["metrics"]["short_term_debt"]["value"] == 90
     assert q["metrics"]["short_term_debt"]["tag"] == "DebtCurrent"
+
+
+def test_build_quarters_avoids_double_counting_current_portion_of_long_term_debt():
+    # F/GM deseni uctan uca: LongTermDebtNoncurrent raporlanmamis (zincir
+    # yedek etikete, LongTermDebt'e dusuyor), ayni ceyrekte hem
+    # LongTermDebtCurrent (short_term_debt bileseni) hem de DebtCurrent
+    # (short_term_debt primary'si) da var. Fark alinmazsa cari kisim
+    # (200) hem short_term_debt'te hem long_term_debt'te sayilir ve
+    # total_debt sismis cikar. Bu, gercek config.INSTANT_METRICS
+    # (subtract_when_using dahil) ile calisir - custom spec verilmez.
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "Revenues": {"units": {"USD": [
+                    _entry("2023-01-01", "2023-03-31", 1000, 2023, "Q1", "10-Q", "2023-05-01"),
+                ]}},
+                "NetIncomeLoss": {"units": {"USD": [
+                    _entry("2023-01-01", "2023-03-31", 200, 2023, "Q1", "10-Q", "2023-05-01"),
+                ]}},
+                "WeightedAverageNumberOfDilutedSharesOutstanding": {"units": {"shares": [
+                    _entry("2023-01-01", "2023-03-31", 100, 2023, "Q1", "10-Q", "2023-05-01"),
+                ]}},
+                "LongTermDebtCurrent": {"units": {"USD": [
+                    _instant("2023-03-31", 200, "10-Q", "2023-05-01"),
+                ]}},
+                "LongTermDebt": {"units": {"USD": [
+                    _instant("2023-03-31", 5000, "10-Q", "2023-05-01"),
+                ]}},
+            }
+        }
+    }
+    quarters = edgar.build_quarters(companyfacts)
+    q = quarters["2023-Q1"]
+
+    # short_term_debt: primary (DebtCurrent) yok, bilesen LongTermDebtCurrent=200.
+    assert q["metrics"]["short_term_debt"]["value"] == 200
+    # long_term_debt: LongTermDebt (5000) - LongTermDebtCurrent (200) = 4800.
+    assert q["metrics"]["long_term_debt"]["value"] == 4800
+    assert q["metrics"]["long_term_debt"]["tag"] == "LongTermDebt"
+    assert q["metrics"]["short_term_debt"]["tag"] == "LongTermDebtCurrent"

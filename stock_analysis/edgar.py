@@ -355,14 +355,24 @@ def resolve_instant_values(entries: list, wanted_ends: set) -> dict:
 _CANONICAL_METRIC_ORDER = ("revenue", "net_income", "operating_income", "operating_cash_flow")
 
 
-def _resolve_instant_chain(companyfacts: dict, tags: list, wanted_ends: set) -> dict:
+def _resolve_instant_chain(
+    companyfacts: dict, tags: list, wanted_ends: set, subtract_when_using: dict = None
+) -> dict:
     """'chain' modundaki bir instant metrigi cozer (bkz. config.INSTANT_METRICS
     aciklamasi): ayni kavramin ALTERNATIF etiketleri HER CEYREK icin
     BAGIMSIZ degerlendirilir - listede once gelen etiket o ceyrek icin veri
     donduruyorsa kullanilir, yoksa siradaki denenir. Ayni ceyrekte birden
     fazla etiket veri donduruyorsa (orn. duzeltme sonrasi iki filing),
     duration metriklerdeki gibi etiket onceligi filed tarihinden once gelir
-    (bkz. _dedupe_entries). Donen: {end: {"val", "tag"}}."""
+    (bkz. _dedupe_entries). Donen: {end: {"val", "tag"}}.
+
+    subtract_when_using: {kullanilan_etiket: cikarilacak_etiket} - zincirdeki
+    etiketler ayni kavrami FARKLI KAPSAMDA tanimliyorsa (biri bir alt-kalemi
+    icerir, digeri haric tutar) kullanilir. Bir ceyrekte kullanilan_etiket
+    secilmisse ve ayni donem sonu icin cikarilacak_etiket de veri
+    donduruyorsa, sonuc deger (kullanilan_etiket - cikarilacak_etiket) olur
+    - bkz. config.INSTANT_METRICS long_term_debt aciklamasi (cift sayimi
+    onlemek icin LongTermDebt'ten LongTermDebtCurrent'in cikarilmasi)."""
     combined = _load_priority_entries(companyfacts, tags)
     filed_entries = [e for e in combined if e.get("form", "").startswith(("10-Q", "10-K"))]
     by_end = {}
@@ -377,6 +387,23 @@ def _resolve_instant_chain(companyfacts: dict, tags: list, wanted_ends: set) -> 
         e_rank = e.get("_tag_rank", 0)
         if e_rank < cur_rank or (e_rank == cur_rank and e.get("filed", "") >= cur.get("filed", "")):
             by_end[e["end"]] = e
+
+    if subtract_when_using:
+        subtract_resolved_cache = {}
+        for end, e in by_end.items():
+            subtract_tag = subtract_when_using.get(e.get("_tag"))
+            if not subtract_tag:
+                continue
+            if subtract_tag not in subtract_resolved_cache:
+                subtract_resolved_cache[subtract_tag] = resolve_instant_values(
+                    _load_fact_entries(companyfacts, subtract_tag), wanted_ends
+                )
+            subtract_entry = subtract_resolved_cache[subtract_tag].get(end)
+            if subtract_entry is not None:
+                e = dict(e)
+                e["val"] = e["val"] - subtract_entry["val"]
+                by_end[end] = e
+
     return {end: {"val": e["val"], "tag": e.get("_tag")} for end, e in by_end.items()}
 
 
@@ -420,7 +447,9 @@ def _resolve_instant_metric(companyfacts: dict, spec: dict, wanted_ends: set) ->
     alanina gore _resolve_instant_chain / _resolve_instant_sum'a yonlendirir.
     Donen: {end: {"val", "tag"}}."""
     if spec["mode"] == "chain":
-        return _resolve_instant_chain(companyfacts, spec["tags"], wanted_ends)
+        return _resolve_instant_chain(
+            companyfacts, spec["tags"], wanted_ends, spec.get("subtract_when_using")
+        )
     if spec["mode"] == "sum":
         return _resolve_instant_sum(companyfacts, spec.get("primary"), spec["components"], wanted_ends)
     raise ValueError(f"bilinmeyen instant metrik modu: {spec['mode']!r}")
