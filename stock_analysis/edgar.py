@@ -567,14 +567,31 @@ def build_quarters(companyfacts: dict, cached_quarters: dict = None, splits: lis
             value = None
             if period_end and period_end in resolved:
                 value = resolved[period_end]["val"]
-            if value is not None and metric in additive_results:
-                _, add_resolved = additive_results[metric]
-                add_entry = add_resolved.get(period_end)
+
+            add_value, add_tag = None, None
+            if metric in additive_results:
+                additive_tag_used, add_resolved = additive_results[metric]
+                add_entry = add_resolved.get(period_end) if period_end else None
                 if add_entry is not None:
-                    value += add_entry["val"]
+                    add_value, add_tag = add_entry["val"], additive_tag_used
+
+            # Tamamlayici bilesen (orn. CommercialPaper), ana etiket o
+            # ceyrekte veri dondurmese bile TEK BASINA bir deger uretebilir -
+            # ikisi de yoksa "veri yok", en az biri varsa digeri 0 sayilir
+            # (bkz. config.INSTANT_ADDITIVE_TAGS aciklamasi). Eskiden ana
+            # etiket None ise tamamlayici hic denenmiyordu; bu, gercek AAPL
+            # verisinde 2014-Q4/2015-Q1/Q2'de LongTermDebtCurrent'in bos
+            # ama CommercialPaper'in dolu oldugu ceyrekleri "veri yok"
+            # gosteriyordu.
+            if value is None and add_value is None:
+                combined_value, combined_tag = None, None
+            else:
+                combined_value = (value or 0) + (add_value or 0)
+                combined_tag = tag_used if value is not None else add_tag
+
             metrics[metric] = {
-                "value": value,
-                "tag": tag_used if value is not None else None,
+                "value": combined_value,
+                "tag": combined_tag,
                 "derived": False,
             }
 
