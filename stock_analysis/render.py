@@ -11,8 +11,10 @@ render sirasinda yapilir:
   - KAPSAM KURALI: bir ceyreklik-seri metrigi, bulunan ceyreklerin
     %30'undan azinda doluysa gizlenir (bkz. _COVERAGE_CHECKED_METRICS).
 Bir metrik ikisiyle de eslesirse sektor gerekcesi kullanilir (daha
-yapisal neden); gizlenen her metrigin yerine bos hucre degil, tek
-cumlelik gerekce yazilir.
+yapisal neden); gizlenen her metrigin hucresine "—" konur, gerekce
+cumlesi hucreye degil bolumun altina TEK SEFERLIK not olarak yazilir
+(bkz. _add_note/_render_notes) - ayni gerekce birden fazla metrigi
+gizlese bile tekrarlanmaz.
 """
 
 import html
@@ -26,14 +28,18 @@ _SENTENCE_END_RE = re.compile(r"[.!?](?=\s|$)")
 _VALUATION_LABELS = {"pe": "F/K", "ps": "P/S", "ev_ebitda": "EV/EBITDA", "p_fcf": "P/FCF"}
 
 # Borc ve marj temelli metrikler - CLAUDE.md > Metrikler > SEKTOR ISTISNASI.
-# Sadece bu render'da GERCEKTEN gosterilen alanlari icerir. ev_ebitda borcu
-# (EV hesabinda) icerdigi icin buradadir; F/K, P/S, P/FCF degildir.
+# net_margin BILEREK burada YOK: bankalarda net kar / toplam gelir anlamli
+# bir orandir, gizlenmez. F/K de burada yok - degerlemenin kendisi borc/marj
+# temelli degildir.
 _SECTOR_HIDDEN_METRICS = {
     "gross_margin",
     "operating_margin",
-    "net_margin",
     "net_debt",
+    "total_debt",
+    "net_debt_to_ebitda",
     "ev_ebitda",
+    "p_fcf",
+    "interest_coverage",
 }
 
 # KAPSAM KURALI sadece ceyrek bazinda bir seri olarak var olan ve bu
@@ -126,10 +132,28 @@ def _fmt_int(value) -> str:
     return f"{int(value):,}"
 
 
-def _cell(data: dict, key: str, raw_value, formatter) -> str:
+def _add_note(notes: list, reason: str) -> None:
+    """Bir gerekce metnini, zaten listede yoksa siraya ekler. Bu, ayni
+    gerekcenin birden fazla hucrede (orn. sektor kurali birden fazla
+    metrigi ayni cumleyle gizler) tekrar tekrar yazilmasini onler - hucreye
+    sadece '—' konur, gerekce bolumun altinda tek seferlik not olarak
+    gosterilir (bkz. modul docstring'i)."""
+    if reason not in notes:
+        notes.append(reason)
+
+
+def _render_notes(notes: list) -> str:
+    if not notes:
+        return ""
+    paragraphs = "".join(f'<p class="reason-note">{_esc(r)}</p>' for r in notes)
+    return f'<div class="notes">{paragraphs}</div>'
+
+
+def _cell(data: dict, key: str, raw_value, formatter, notes: list) -> str:
     reason = _hidden_reason(key, data)
     if reason:
-        return f'<span class="reason">{_esc(reason)}</span>'
+        _add_note(notes, reason)
+        return '<span class="hidden-cell">—</span>'
     if raw_value is None:
         return '<span class="missing">veri yok</span>'
     return formatter(raw_value)
@@ -238,11 +262,13 @@ def _render_valuation(data: dict) -> str:
 
     context = data.get("valuation_context", {})
     rows = []
+    notes = []
     for key, label in _VALUATION_LABELS.items():
         reason = _hidden_reason(key, data)
         value = valuation.get(key)
         if reason:
-            body = f'<span class="reason">{_esc(reason)}</span>'
+            _add_note(notes, reason)
+            body = '<span class="hidden-cell">—</span>'
         elif value is None:
             body = '<span class="missing">veri yok</span>'
         else:
@@ -263,6 +289,7 @@ def _render_valuation(data: dict) -> str:
 <section class="section">
   <h2>Değerleme</h2>
   <div class="fields">{''.join(rows)}</div>
+  {_render_notes(notes)}
 </section>
 """
 
@@ -309,6 +336,7 @@ def _render_peers(data: dict) -> str:
 
     header_cells = "".join(f'<th>{_esc(p["ticker"])}</th>' for p in peers)
     body_rows = []
+    notes = []
     for row_key, label, finnhub_field, valuation_key in _PEER_ROWS:
         own_value = _own_peer_row_value(row_key, valuation_key, data, last_quarter)
         own_cell = _cell(
@@ -316,11 +344,12 @@ def _render_peers(data: dict) -> str:
             row_key,
             own_value,
             _fmt_percent if valuation_key is None else _fmt_ratio,
+            notes,
         )
         peer_cells = []
         for peer in peers:
             if peer.get("status") != "ok":
-                peer_cells.append('<td><span class="reason">veri alınamadı</span></td>')
+                peer_cells.append('<td><span class="missing">veri alınamadı</span></td>')
                 continue
             # KAPSAM KURALI burada uygulanmaz: Finnhub rakip kesiti anlik bir
             # nokta veridir, "bulunan ceyreklerin %X'i" gibi bir seriye
@@ -329,7 +358,8 @@ def _render_peers(data: dict) -> str:
             reason = _sector_reason(row_key, data)
             peer_value = peer.get(finnhub_field)
             if reason:
-                peer_cells.append(f'<td><span class="reason">{_esc(reason)}</span></td>')
+                _add_note(notes, reason)
+                peer_cells.append('<td><span class="hidden-cell">—</span></td>')
             elif peer_value is None:
                 peer_cells.append('<td><span class="missing">veri yok</span></td>')
             else:
@@ -346,6 +376,7 @@ def _render_peers(data: dict) -> str:
     <thead><tr><th>Metrik</th><th class="self">{_esc(data['ticker'])}</th>{header_cells}</tr></thead>
     <tbody>{''.join(body_rows)}</tbody>
   </table>
+  {_render_notes(notes)}
 </section>
 """
 
@@ -374,8 +405,9 @@ def _render_latest_quarter(data: dict) -> str:
     last_quarter = quarter_items[-1][1]
     label = f"{last_quarter['fiscal_year']}-Q{last_quarter['fiscal_quarter']} ({last_quarter['period_end']})"
 
+    notes = []
     fields = "".join(
-        _field(row_label, _cell(data, key, _quarter_value(last_quarter, key), formatter))
+        _field(row_label, _cell(data, key, _quarter_value(last_quarter, key), formatter, notes))
         for key, row_label, formatter in _LATEST_QUARTER_ROWS
     )
     return f"""
@@ -383,6 +415,7 @@ def _render_latest_quarter(data: dict) -> str:
   <h2>Son çeyrek özeti</h2>
   <p class="summary">{_esc(label)}</p>
   <div class="fields">{fields}</div>
+  {_render_notes(notes)}
 </section>
 """
 
@@ -521,6 +554,26 @@ main {
 
 .missing {
   color: var(--text-muted);
+}
+
+.hidden-cell {
+  color: var(--text-muted);
+}
+
+.notes {
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.reason-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-style: italic;
 }
 
 .peer-table {
