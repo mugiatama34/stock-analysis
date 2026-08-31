@@ -8,10 +8,13 @@ def fetch_stock_data(ticker: str) -> dict:
     ticker = ticker.upper()
 
     cik = edgar.get_cik(ticker)
+    splits = yfinance_source.fetch_splits(ticker)
 
     cached = cache.load_cache(ticker)
     companyfacts = edgar.fetch_companyfacts(cik)
-    new_quarters = edgar.build_quarters(companyfacts, cached_quarters=cached.get("quarters", {}))
+    new_quarters = edgar.build_quarters(
+        companyfacts, cached_quarters=cached.get("quarters", {}), splits=splits
+    )
     all_quarters = cache.merge_quarters(cached.get("quarters", {}), new_quarters)
     cache.save_cache(ticker, cik, all_quarters)
 
