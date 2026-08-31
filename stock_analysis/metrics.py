@@ -7,16 +7,22 @@ def _safe_div(a, b):
     return a / b
 
 
+_SECTOR_KEYWORD_LABELS = {
+    "bank": "Bankalarda",
+    "insurance": "Sigorta şirketlerinde",
+    "reit": "GYO'larda",
+    "real estate investment trust": "GYO'larda",
+}
+
+
 def classify_sector(sector, industry) -> dict:
     haystack = f"{sector or ''} {industry or ''}".lower()
     for keyword in config.FINANCIAL_SECTOR_KEYWORDS:
         if keyword in haystack:
+            label = _SECTOR_KEYWORD_LABELS.get(keyword, "Bu sektörde")
             return {
                 "is_financial_sector": True,
-                "reason": (
-                    f"Sektor/endustri bilgisinde '{keyword}' tespit edildi; "
-                    "borc ve nakit temelli oranlar bu sektorde anlamsiz."
-                ),
+                "reason": f"{label} borç ve marj temelli bazı oranlar anlamlı değil, bu yüzden gizlendi.",
             }
     return {"is_financial_sector": False, "reason": None}
 

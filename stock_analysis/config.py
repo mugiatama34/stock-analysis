@@ -49,6 +49,11 @@ DURATION_TAG_PRIORITIES = {
         "SalesRevenueNet",
         "SalesRevenueGoodsNet",
         "SalesRevenueServicesNet",
+        # Bankalar (orn. JPM) gelirini faiz gideri dusulmus net rakamla
+        # raporlar; yukaridaki genel-amacli etiketlerin hicbiri bunlarda
+        # bulunmaz.
+        "RevenuesNetOfInterestExpense",
+        "InterestAndDividendIncomeOperating",
     ],
     "cost_of_revenue": [
         "CostOfRevenue",

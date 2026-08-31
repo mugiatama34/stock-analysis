@@ -65,15 +65,19 @@ def test_sector_rule_hides_margins_with_reason_not_blank():
     data = _base_data(
         sector_flag={
             "is_financial_sector": True,
-            "reason": "Sektor/endustri bilgisinde 'bank' tespit edildi; borc ve nakit temelli oranlar bu sektorde anlamsiz.",
+            "reason": "Bankalarda borç ve marj temelli bazı oranlar anlamlı değil, bu yüzden gizlendi.",
         }
     )
 
     output = render.render_report(data, generated_at="2026-08-31")
 
-    assert "borc ve nakit temelli oranlar bu sektorde anlamsiz" in output
+    assert "borç ve marj temelli bazı oranlar anlamlı değil" in output
     # gizlenen brut marj (0.4) sayisal olarak gorunmemeli
     assert "%40.0" not in output
+    # ayni gerekce birden fazla metrigi (brut + faaliyet marji) gizliyor
+    # ama sadece BIR KEZ, hucreye degil bolumun altina not olarak yazilmali
+    assert output.count("borç ve marj temelli bazı oranlar anlamlı değil") == 1
+    assert '<span class="hidden-cell">—</span>' in output
 
 
 def test_coverage_rule_hides_metric_present_in_only_one_of_five_quarters():
