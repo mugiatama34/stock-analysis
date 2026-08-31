@@ -355,22 +355,75 @@ def resolve_instant_values(entries: list, wanted_ends: set) -> dict:
 _CANONICAL_METRIC_ORDER = ("revenue", "net_income", "operating_income", "operating_cash_flow")
 
 
-def _resolve_instant_metric(companyfacts: dict, tags: list, wanted_ends: set) -> tuple:
-    """Bir instant metrigin aday etiketleri icin, sirket genelinde herhangi
-    bir deger dondurun ILK etigeti SABIT olarak kullanir ve o etiketle tum
-    istenen ceyrek-sonu tarihlerini bir kerede cozer. Duration metriklerin
-    aksine burada BIRLESTIRME yapilmaz: config.INSTANT_TAG_PRIORITIES'teki
-    etiketler ayni kavramin farkli tanimlari olabilir (orn. LongTermDebt ile
-    LongTermDebtNoncurrent), bu yuzden bir sirketin serisi ceyrekten
-    ceyrege farkli tanima kaymamali. Donen: (kullanilan_tag, {end: entry})."""
-    for tag in tags:
+def _resolve_instant_chain(companyfacts: dict, tags: list, wanted_ends: set) -> dict:
+    """'chain' modundaki bir instant metrigi cozer (bkz. config.INSTANT_METRICS
+    aciklamasi): ayni kavramin ALTERNATIF etiketleri HER CEYREK icin
+    BAGIMSIZ degerlendirilir - listede once gelen etiket o ceyrek icin veri
+    donduruyorsa kullanilir, yoksa siradaki denenir. Ayni ceyrekte birden
+    fazla etiket veri donduruyorsa (orn. duzeltme sonrasi iki filing),
+    duration metriklerdeki gibi etiket onceligi filed tarihinden once gelir
+    (bkz. _dedupe_entries). Donen: {end: {"val", "tag"}}."""
+    combined = _load_priority_entries(companyfacts, tags)
+    filed_entries = [e for e in combined if e.get("form", "").startswith(("10-Q", "10-K"))]
+    by_end = {}
+    for e in filed_entries:
+        if e["end"] not in wanted_ends:
+            continue
+        cur = by_end.get(e["end"])
+        if cur is None:
+            by_end[e["end"]] = e
+            continue
+        cur_rank = cur.get("_tag_rank", 0)
+        e_rank = e.get("_tag_rank", 0)
+        if e_rank < cur_rank or (e_rank == cur_rank and e.get("filed", "") >= cur.get("filed", "")):
+            by_end[e["end"]] = e
+    return {end: {"val": e["val"], "tag": e.get("_tag")} for end, e in by_end.items()}
+
+
+def _resolve_instant_sum(companyfacts: dict, primary: str, components: list, wanted_ends: set) -> dict:
+    """'sum' modundaki bir instant metrigi cozer (bkz. config.INSTANT_METRICS
+    aciklamasi): primary etiket (varsa) o ceyrek icin veri donduruyorsa TEK
+    BASINA kullanilir - zaten kendisi bir toplam kalemdir, components'a
+    bakilmaz. Yoksa components'taki bulunan etiketlerin degerleri toplanir
+    (bulunamayan bilesen 0 sayilir). Donen: {end: {"val", "tag"}} - "tag"
+    birden fazla bilesen toplandiysa "+" ile birlestirilmis olarak gelir."""
+    primary_resolved = {}
+    if primary:
+        primary_raw = _load_fact_entries(companyfacts, primary)
+        if primary_raw:
+            primary_resolved = resolve_instant_values(primary_raw, wanted_ends)
+
+    component_resolved = {}
+    for tag in components:
         raw = _load_fact_entries(companyfacts, tag)
         if not raw:
             continue
         resolved = resolve_instant_values(raw, wanted_ends)
-        if resolved:
-            return tag, resolved
-    return None, {}
+        for end, entry in resolved.items():
+            component_resolved.setdefault(end, []).append((tag, entry["val"]))
+
+    result = {}
+    for end in wanted_ends:
+        if end in primary_resolved:
+            result[end] = {"val": primary_resolved[end]["val"], "tag": primary}
+        elif end in component_resolved:
+            parts = component_resolved[end]
+            result[end] = {
+                "val": sum(v for _, v in parts),
+                "tag": "+".join(t for t, _ in parts),
+            }
+    return result
+
+
+def _resolve_instant_metric(companyfacts: dict, spec: dict, wanted_ends: set) -> dict:
+    """spec (config.INSTANT_METRICS'teki bir metrik girdisi) icindeki "mode"
+    alanina gore _resolve_instant_chain / _resolve_instant_sum'a yonlendirir.
+    Donen: {end: {"val", "tag"}}."""
+    if spec["mode"] == "chain":
+        return _resolve_instant_chain(companyfacts, spec["tags"], wanted_ends)
+    if spec["mode"] == "sum":
+        return _resolve_instant_sum(companyfacts, spec.get("primary"), spec["components"], wanted_ends)
+    raise ValueError(f"bilinmeyen instant metrik modu: {spec['mode']!r}")
 
 
 def _resolve_eps_diluted(duration_results: dict) -> dict:
@@ -537,12 +590,8 @@ def build_quarters(companyfacts: dict, cached_quarters: dict = None, splits: lis
     wanted_ends = {pe for pe, _, _ in period_info.values() if pe}
 
     instant_results = {
-        metric: _resolve_instant_metric(companyfacts, tags, wanted_ends)
-        for metric, tags in config.INSTANT_TAG_PRIORITIES.items()
-    }
-    additive_results = {
-        metric: _resolve_instant_metric(companyfacts, tags, wanted_ends)
-        for metric, tags in config.INSTANT_ADDITIVE_TAGS.items()
+        metric: _resolve_instant_metric(companyfacts, spec, wanted_ends)
+        for metric, spec in config.INSTANT_METRICS.items()
     }
 
     new_quarters = {}
@@ -563,35 +612,11 @@ def build_quarters(companyfacts: dict, cached_quarters: dict = None, splits: lis
         # adedinden hesaplanir (bkz. _resolve_eps_diluted).
         metrics["eps_diluted"] = {"value": eps_by_key.get((fy, fp)), "tag": None, "derived": True}
 
-        for metric, (tag_used, resolved) in instant_results.items():
-            value = None
-            if period_end and period_end in resolved:
-                value = resolved[period_end]["val"]
-
-            add_value, add_tag = None, None
-            if metric in additive_results:
-                additive_tag_used, add_resolved = additive_results[metric]
-                add_entry = add_resolved.get(period_end) if period_end else None
-                if add_entry is not None:
-                    add_value, add_tag = add_entry["val"], additive_tag_used
-
-            # Tamamlayici bilesen (orn. CommercialPaper), ana etiket o
-            # ceyrekte veri dondurmese bile TEK BASINA bir deger uretebilir -
-            # ikisi de yoksa "veri yok", en az biri varsa digeri 0 sayilir
-            # (bkz. config.INSTANT_ADDITIVE_TAGS aciklamasi). Eskiden ana
-            # etiket None ise tamamlayici hic denenmiyordu; bu, gercek AAPL
-            # verisinde 2014-Q4/2015-Q1/Q2'de LongTermDebtCurrent'in bos
-            # ama CommercialPaper'in dolu oldugu ceyrekleri "veri yok"
-            # gosteriyordu.
-            if value is None and add_value is None:
-                combined_value, combined_tag = None, None
-            else:
-                combined_value = (value or 0) + (add_value or 0)
-                combined_tag = tag_used if value is not None else add_tag
-
+        for metric, resolved in instant_results.items():
+            entry = resolved.get(period_end) if period_end else None
             metrics[metric] = {
-                "value": combined_value,
-                "tag": combined_tag,
+                "value": entry["val"] if entry else None,
+                "tag": entry["tag"] if entry else None,
                 "derived": False,
             }
 

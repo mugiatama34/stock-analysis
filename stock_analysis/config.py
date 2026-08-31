@@ -103,36 +103,51 @@ AVERAGE_METRICS = {
 }
 
 # "instant" (bir tarihteki anlik) kalemler: bilanco kalemleri. Ceyrek sonu
-# tarihine gore dogrudan okunur, turetme yapilmaz. Listedeki etiketler ayni
-# kavramin FARKLI TANIMLARI olabilir (orn. LongTermDebt ile
-# LongTermDebtNoncurrent ayni sey degildir) - bu yuzden duration
-# metriklerinin aksine BIRLESTIRILMEZ: sirket genelinde veri donduren ILK
-# etiket sabit olarak kullanilir, ceyrekten ceyrege farkli tanima gecilmez.
-INSTANT_TAG_PRIORITIES = {
-    "cash_and_equivalents": [
-        "CashAndCashEquivalentsAtCarryingValue",
-        "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
-    ],
-    "short_term_debt": [
-        "ShortTermBorrowings",
-        "DebtCurrent",
-        "LongTermDebtCurrent",
-    ],
-    "long_term_debt": [
-        "LongTermDebtNoncurrent",
-        "LongTermDebt",
-    ],
-}
-
-# Bazi bilanco kalemleri ana etiketin ALTERNATIFI degil, TAMAMLAYICISIDIR:
-# sirket ikisine de ayni anda sahip olabilir (orn. kisa vadeli borclanma +
-# ticari senet). Bu yuzden fallback zincirine degil, ayrica toplanan bir
-# bilesen listesine konur. Eksikse 0 sayilir (yoklugu "veri yok" degil,
-# o bilesenin sirkette bulunmadigi anlamina gelir).
-INSTANT_ADDITIVE_TAGS = {
-    "short_term_debt": [
-        "CommercialPaper",
-    ],
+# tarihine gore dogrudan okunur, turetme yapilmaz. Her metrik iki
+# COZUMLEME MODUNDAN biriyle tanimlanir (bkz. edgar._resolve_instant_metric):
+#
+# - "chain" (oncelik zinciri): listedeki etiketler ayni kavramin ALTERNATIF
+#   tanimlaridir (orn. sirket bir ceyrekte gecici olarak LongTermDebtNoncurrent
+#   yerine LongTermDebt kullanmis olabilir - bu genelde XBRL hazirlayici
+#   tutarsizligidir, gercek tanim degisikligi degil). HER CEYREK BAGIMSIZ
+#   cozulur: o ceyrek icin veri donduren ILK etiket kullanilir. Sirket
+#   genelinde tek etikete kilitlenilmez - aksi halde bir ceyrekte gecici
+#   etiket degisimi, veri ASLINDA VARKEN o ceyregi "veri yok" birakir.
+#
+# - "sum" (bilesen toplami): sirketin AYNI ANDA sahip olabilecegi FARKLI
+#   kalemlerin toplamidir (orn. kisa vadeli borclanma + ticari senet).
+#   "primary" (varsa) TEK BASINA zaten toplam sayilan bir kalemdir (orn.
+#   DebtCurrent) - o ceyrek icin veri donduruyorsa TEK BASINA kullanilir,
+#   "components" listesine HIC bakilmaz (ikisini toplamak cift sayima yol
+#   acar). primary o ceyrek icin veri dondurmuyorsa, components'taki
+#   bulunan TUM etiketlerin degeri toplanir; bulunamayan bilesen 0 sayilir
+#   (yoklugu "veri yok" degil, o bilesenin sirkette bulunmadigi anlamina
+#   gelir). Bankalar ve finansman kolu olan sirketler gibi coklu borc
+#   kalemi bilesenine sahip sirketler icin gerekli.
+INSTANT_METRICS = {
+    "cash_and_equivalents": {
+        "mode": "chain",
+        "tags": [
+            "CashAndCashEquivalentsAtCarryingValue",
+            "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+        ],
+    },
+    "short_term_debt": {
+        "mode": "sum",
+        "primary": "DebtCurrent",
+        "components": [
+            "CommercialPaper",
+            "LongTermDebtCurrent",
+            "ShortTermBorrowings",
+        ],
+    },
+    "long_term_debt": {
+        "mode": "chain",
+        "tags": [
+            "LongTermDebtNoncurrent",
+            "LongTermDebt",
+        ],
+    },
 }
 
 # Sektor istisnasi tespiti icin yfinance sector/industry metninde aranan
