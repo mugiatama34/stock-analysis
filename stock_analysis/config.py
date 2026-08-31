@@ -20,6 +20,19 @@ MAX_PEERS = 5
 # once kalan (fy, fp) anahtarlarini uretmez.
 MIN_FISCAL_YEAR = 2010
 
+# Ticker SEC'in company_tickers.json listesinde (CIK'i var) olsa bile,
+# companyfacts'te 10-Q/10-K kaynakli ceyrek sayisi bunun altindaysa
+# errors.InsufficientQuarterlyDataError firlatilir (bkz. pipeline.py).
+# Tipik tetikleyici: ADR olarak listelenen yabanci ozel ihraccilar (orn.
+# ASML) SEC'e 10-Q/10-K yerine 20-F/6-K dosyalar - CIK bulunur ama
+# donemsel us-gaap verisi hic ya da neredeyse hic gelmez. Bu kontrol
+# olmadan pipeline sessizce 0 (veya birkac) ceyrekli, tum metrikleri
+# "veri yok" bos bir rapor uretiyordu - CLAUDE.md'nin "ABD disi hisse
+# desteklenmiyor, net hata mesajiyla dur" kuralini es geciyordu. 8 (2 yil)
+# esigi, YoY buyume ve 5 yillik yuzdelik konumlandirma gibi bu aracin
+# TASARIM GEREGI ihtiyac duydugu asgari veri miktarina karsilik gelir.
+MIN_USABLE_QUARTERS = 8
+
 # Her metrik icin sirali XBRL us-gaap tag adaylari. Bunlar "duration" (donem
 # boyunca akan) kalemlerdir: gelir tablosu ve nakit akis kalemleri.
 # Sirketler zaman icinde etiket degistirebilir (orn. ASC 606 sonrasi gelir

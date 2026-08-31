@@ -1,10 +1,13 @@
-from . import cache, edgar, finnhub_source, metrics, yfinance_source
+from . import cache, config, edgar, errors, finnhub_source, metrics, yfinance_source
 
 
 def fetch_stock_data(ticker: str) -> dict:
     """Tek bir ABD hissesi icin EDGAR + yfinance + Finnhub verisini cekip
     tek bir Python sozlugu olarak dondurur. Ticker SEC listesinde yoksa
-    edgar.TickerNotFoundError yukari firlar ve is durur."""
+    edgar.TickerNotFoundError, CIK bulunup da 10-Q/10-K kaynakli ceyrek
+    sayisi config.MIN_USABLE_QUARTERS'in altinda kalirsa (orn. 20-F/6-K
+    dosyalayan yabanci ozel ihracci) errors.InsufficientQuarterlyDataError
+    yukari firlar ve is durur - bos/anlamsiz bir rapor uretilmez."""
     ticker = ticker.upper()
 
     cik = edgar.get_cik(ticker)
@@ -16,6 +19,15 @@ def fetch_stock_data(ticker: str) -> dict:
         companyfacts, cached_quarters=cached.get("quarters", {}), splits=splits
     )
     all_quarters = cache.merge_quarters(cached.get("quarters", {}), new_quarters)
+
+    if len(all_quarters) < config.MIN_USABLE_QUARTERS:
+        raise errors.InsufficientQuarterlyDataError(
+            f"'{ticker}' icin companyfacts'te sadece {len(all_quarters)} ceyrek "
+            f"10-Q/10-K kaynakli veri bulundu (asgari {config.MIN_USABLE_QUARTERS} "
+            "gerekli). Sirket SEC'e 10-Q/10-K yerine 20-F/6-K dosyaliyor olabilir "
+            "(yabanci ozel ihracci) - ABD disi hisseler desteklenmiyor."
+        )
+
     cache.save_cache(ticker, cik, all_quarters)
 
     for quarter in all_quarters.values():

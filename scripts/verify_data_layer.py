@@ -267,7 +267,11 @@ def main() -> None:
 
     try:
         data = pipeline.fetch_stock_data(args.ticker)
-    except (errors.TickerNotFoundError, errors.SecRequestError) as exc:
+    except (
+        errors.TickerNotFoundError,
+        errors.SecRequestError,
+        errors.InsufficientQuarterlyDataError,
+    ) as exc:
         print(f"HATA: {exc}", file=sys.stderr)
         sys.exit(1)
 
