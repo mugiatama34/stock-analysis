@@ -26,9 +26,9 @@ def compute_quarter_derived(quarter_metrics: dict) -> dict:
     turevlerini hesaplar. Herhangi bir girdi None ise sonuc da None kalir,
     tahmin/varsayim yapilmaz."""
     revenue = quarter_metrics["revenue"]["value"]
-    gross_profit = quarter_metrics["gross_profit"]["value"]
     cost_of_revenue = quarter_metrics["cost_of_revenue"]["value"]
-    if gross_profit is None and revenue is not None and cost_of_revenue is not None:
+    gross_profit = None
+    if revenue is not None and cost_of_revenue is not None:
         gross_profit = revenue - cost_of_revenue
 
     operating_income = quarter_metrics["operating_income"]["value"]

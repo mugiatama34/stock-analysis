@@ -74,13 +74,23 @@ def _load_fact_entries(companyfacts: dict, tag: str) -> list:
 
 
 def _dedupe_entries(entries: list) -> list:
-    """Ayni (start, end) donemi icin birden fazla kayit varsa (restatement
-    vb.), en son 'filed' tarihli olani tutar."""
+    """Ayni (start, end) donemi icin birden fazla kayit varsa, tercih
+    sirasi: (1) daha yuksek onceligi etiketten gelen (_tag_rank kucuk olan -
+    bkz. _load_priority_entries), (2) esitlikte en son 'filed' tarihli olan
+    (restatement/duzeltme). Boylece ayni donem birden fazla etikette
+    gorunse bile hangi etiketin "kazandigi" sirket genelinde degil,
+    her (start,end) icin tutarli sekilde config oncelik sirasina gore
+    belirlenir."""
     best = {}
     for e in entries:
         key = (e.get("start"), e["end"])
         cur = best.get(key)
-        if cur is None or e.get("filed", "") >= cur.get("filed", ""):
+        if cur is None:
+            best[key] = e
+            continue
+        cur_rank = cur.get("_tag_rank", 0)
+        e_rank = e.get("_tag_rank", 0)
+        if e_rank < cur_rank or (e_rank == cur_rank and e.get("filed", "") >= cur.get("filed", "")):
             best[key] = e
     return list(best.values())
 
@@ -91,18 +101,40 @@ def _days(entry: dict) -> int:
     return (end - start).days
 
 
+def _load_priority_entries(companyfacts: dict, tags: list) -> list:
+    """Bir metrigin TUM aday etiketlerinden gelen kayitlari, hangi etiketten
+    geldigini (_tag, _tag_rank) isaretleyerek TEK listede birlestirir.
+    Sirket zaman icinde etiket degistirmis olabilir (orn. ASC 606 sonrasi
+    gelir etiketi); tek etikette durmak gecmisin bir kismini sessizce
+    dusurur, bu yuzden hepsi toplanir ve cakisan donemler _dedupe_entries
+    icinde oncelik sirasina gore cozulur."""
+    combined = []
+    for rank, tag in enumerate(tags):
+        for e in _load_fact_entries(companyfacts, tag):
+            e = dict(e)
+            e["_tag"] = tag
+            e["_tag_rank"] = rank
+            combined.append(e)
+    return combined
+
+
 def resolve_duration_quarters(entries: list) -> dict:
-    """Tek bir tag'e ait ham SEC fact kayitlarindan (fiscal_year, "Qn") ->
-    {"value", "end", "filed", "form", "derived"} sozlugu uretir.
+    """Ham SEC fact kayitlarindan (birden fazla etiketten gelmis ve
+    _load_priority_entries ile isaretlenmis olabilir) (fiscal_year, "Qn") ->
+    {"value", "end", "filed", "form", "derived", "tag"} sozlugu uretir.
 
     Mantik:
     - Q1: kumulatif zaten ceyregin kendisi (start = mali yil baslangici).
+      Sure ~70-110 gun disindaki kayitlar (yanlis fy/fp etiketlenmis olabilir)
+      elenir.
     - Q2/Q3: ayrik 3 aylik kayit varsa (sure ~70-100 gun) dogrudan kullanilir;
       yoksa kumulatif kayittan (6/9 aylik) onceki ceyreklerin toplami
       cikarilarak turetilir.
     - Q4: dogrudan hicbir zaman gelmez (10-K sadece yillik verir). Yillik
       toplamdan Q1+Q2+Q3 cikarilarak turetilir. Onceki ceyreklerden biri
-      eksikse Q4 de "veri yok" kalir.
+      eksikse Q4 de "veri yok" kalir. Q1/Q2/Q3 farkli etiketlerden gelmis
+      olsa bile (sirket etiket degistirmisse) turetme calisir, cunku
+      birlestirme _load_priority_entries asamasinda zaten yapildi.
     """
     filed_entries = [
         e
@@ -123,13 +155,13 @@ def resolve_duration_quarters(entries: list) -> dict:
     for fy, by_fp in by_fy_fp.items():
         resolved_values = {}
 
-        q1_entries = by_fp.get("Q1", [])
+        q1_entries = [e for e in by_fp.get("Q1", []) if 70 <= _days(e) <= 110]
         if q1_entries:
             e = max(q1_entries, key=lambda x: x["filed"])
             resolved_values["Q1"] = e["val"]
             result[(fy, "Q1")] = {
                 "value": e["val"], "end": e["end"], "filed": e["filed"],
-                "form": e["form"], "derived": False,
+                "form": e["form"], "derived": False, "tag": e.get("_tag"),
             }
 
         for fp_label, prior_labels in (("Q2", ("Q1",)), ("Q3", ("Q1", "Q2"))):
@@ -143,7 +175,7 @@ def resolve_duration_quarters(entries: list) -> dict:
                 resolved_values[fp_label] = e["val"]
                 result[(fy, fp_label)] = {
                     "value": e["val"], "end": e["end"], "filed": e["filed"],
-                    "form": e["form"], "derived": False,
+                    "form": e["form"], "derived": False, "tag": e.get("_tag"),
                 }
             elif cumulative and all(k in resolved_values for k in prior_labels):
                 e = max(cumulative, key=lambda x: x["filed"])
@@ -152,7 +184,7 @@ def resolve_duration_quarters(entries: list) -> dict:
                 resolved_values[fp_label] = value
                 result[(fy, fp_label)] = {
                     "value": value, "end": e["end"], "filed": e["filed"],
-                    "form": e["form"], "derived": True,
+                    "form": e["form"], "derived": True, "tag": e.get("_tag"),
                 }
 
         fy_entries = [
@@ -165,7 +197,7 @@ def resolve_duration_quarters(entries: list) -> dict:
             value = e["val"] - prior_total
             result[(fy, "Q4")] = {
                 "value": value, "end": e["end"], "filed": e["filed"],
-                "form": e["form"], "derived": True,
+                "form": e["form"], "derived": True, "tag": e.get("_tag"),
             }
 
     return result
@@ -189,9 +221,25 @@ def resolve_instant_values(entries: list, wanted_ends: set) -> dict:
     return by_end
 
 
-_CANONICAL_METRIC_ORDER = (
-    "revenue", "net_income", "operating_income", "operating_cash_flow", "eps_diluted",
-)
+_CANONICAL_METRIC_ORDER = ("revenue", "net_income", "operating_income", "operating_cash_flow")
+
+
+def _resolve_instant_metric(companyfacts: dict, tags: list, wanted_ends: set) -> tuple:
+    """Bir instant metrigin aday etiketleri icin, sirket genelinde herhangi
+    bir deger dondurun ILK etigeti SABIT olarak kullanir ve o etiketle tum
+    istenen ceyrek-sonu tarihlerini bir kerede cozer. Duration metriklerin
+    aksine burada BIRLESTIRME yapilmaz: config.INSTANT_TAG_PRIORITIES'teki
+    etiketler ayni kavramin farkli tanimlari olabilir (orn. LongTermDebt ile
+    LongTermDebtNoncurrent), bu yuzden bir sirketin serisi ceyrekten
+    ceyrege farkli tanima kaymamali. Donen: (kullanilan_tag, {end: entry})."""
+    for tag in tags:
+        raw = _load_fact_entries(companyfacts, tag)
+        if not raw:
+            continue
+        resolved = resolve_instant_values(raw, wanted_ends)
+        if resolved:
+            return tag, resolved
+    return None, {}
 
 
 def build_quarters(companyfacts: dict, cached_quarters: dict = None) -> dict:
@@ -207,61 +255,86 @@ def build_quarters(companyfacts: dict, cached_quarters: dict = None) -> dict:
 
     duration_results = {}
     for metric, tags in config.DURATION_TAG_PRIORITIES.items():
-        for tag in tags:
-            raw = _load_fact_entries(companyfacts, tag)
-            if not raw:
-                continue
-            resolved = resolve_duration_quarters(raw)
-            if resolved:
-                duration_results[metric] = {"tag": tag, "quarters": resolved}
-                break
+        combined_raw = _load_priority_entries(companyfacts, tags)
+        if not combined_raw:
+            continue
+        resolved = resolve_duration_quarters(combined_raw)
+        if resolved:
+            duration_results[metric] = resolved
 
     all_keys = set()
-    for info in duration_results.values():
-        all_keys |= set(info["quarters"].keys())
+    for quarters in duration_results.values():
+        all_keys |= set(quarters.keys())
 
-    new_quarters = {}
-    for fy, fp in sorted(all_keys):
-        qkey_str = f"{fy}-{fp}"
-        if qkey_str in cached_quarters:
-            continue
+    new_keys = [
+        (fy, fp) for fy, fp in sorted(all_keys) if f"{fy}-{fp}" not in cached_quarters
+    ]
 
+    period_info = {}
+    for fy, fp in new_keys:
         period_end = filed = form = None
         for metric in _CANONICAL_METRIC_ORDER:
-            info = duration_results.get(metric)
-            if info and (fy, fp) in info["quarters"]:
-                rf = info["quarters"][(fy, fp)]
+            quarters = duration_results.get(metric)
+            if quarters and (fy, fp) in quarters:
+                rf = quarters[(fy, fp)]
                 period_end, filed, form = rf["end"], rf["filed"], rf["form"]
                 break
         if period_end is None:
-            for info in duration_results.values():
-                if (fy, fp) in info["quarters"]:
-                    rf = info["quarters"][(fy, fp)]
+            for quarters in duration_results.values():
+                if (fy, fp) in quarters:
+                    rf = quarters[(fy, fp)]
                     period_end, filed, form = rf["end"], rf["filed"], rf["form"]
                     break
+        period_info[(fy, fp)] = (period_end, filed, form)
+
+    wanted_ends = {pe for pe, _, _ in period_info.values() if pe}
+
+    instant_results = {
+        metric: _resolve_instant_metric(companyfacts, tags, wanted_ends)
+        for metric, tags in config.INSTANT_TAG_PRIORITIES.items()
+    }
+    additive_results = {
+        metric: _resolve_instant_metric(companyfacts, tags, wanted_ends)
+        for metric, tags in config.INSTANT_ADDITIVE_TAGS.items()
+    }
+
+    new_quarters = {}
+    for fy, fp in new_keys:
+        qkey_str = f"{fy}-{fp}"
+        period_end, filed, form = period_info[(fy, fp)]
 
         metrics = {}
         for metric in config.DURATION_TAG_PRIORITIES:
-            info = duration_results.get(metric)
-            rf = info["quarters"].get((fy, fp)) if info else None
+            quarters = duration_results.get(metric)
+            rf = quarters.get((fy, fp)) if quarters else None
             if rf is None:
                 metrics[metric] = {"value": None, "tag": None, "derived": False}
             else:
-                metrics[metric] = {"value": rf["value"], "tag": info["tag"], "derived": rf["derived"]}
+                metrics[metric] = {"value": rf["value"], "tag": rf.get("tag"), "derived": rf["derived"]}
 
-        for metric, tags in config.INSTANT_TAG_PRIORITIES.items():
-            value = tag_used = None
-            if period_end:
-                for tag in tags:
-                    raw = _load_fact_entries(companyfacts, tag)
-                    if not raw:
-                        continue
-                    resolved = resolve_instant_values(raw, {period_end})
-                    if period_end in resolved:
-                        value = resolved[period_end]["val"]
-                        tag_used = tag
-                        break
-            metrics[metric] = {"value": value, "tag": tag_used, "derived": False}
+        # eps_diluted: XBRL etiketinden degil, net kar / seyreltilmis hisse
+        # adedinden hesaplanir (bkz. config.py notu, madde 5).
+        net_income = metrics["net_income"]["value"]
+        diluted_shares = metrics["diluted_shares"]["value"]
+        eps_value = None
+        if net_income is not None and diluted_shares:
+            eps_value = net_income / diluted_shares
+        metrics["eps_diluted"] = {"value": eps_value, "tag": None, "derived": True}
+
+        for metric, (tag_used, resolved) in instant_results.items():
+            value = None
+            if period_end and period_end in resolved:
+                value = resolved[period_end]["val"]
+            if value is not None and metric in additive_results:
+                _, add_resolved = additive_results[metric]
+                add_entry = add_resolved.get(period_end)
+                if add_entry is not None:
+                    value += add_entry["val"]
+            metrics[metric] = {
+                "value": value,
+                "tag": tag_used if value is not None else None,
+                "derived": False,
+            }
 
         new_quarters[qkey_str] = {
             "fiscal_year": fy,
