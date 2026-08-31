@@ -147,11 +147,15 @@ def test_duration_tag_priority_wins_over_later_filed():
     assert result[(2023, "Q1")]["tag"] == "PriorityTag"
 
 
-def test_instant_metric_does_not_mix_definitions_across_quarters():
-    # LongTermDebtNoncurrent ve LongTermDebt farkli tanimlar; sirketin
-    # herhangi bir ceyregi icin veri olan ILK etiket sirket genelinde sabit
-    # kullanilmali, diger etigin verisi olan bir baska ceyrek icin bile
-    # otomatik gecis yapilmamali.
+def test_instant_chain_resolves_per_quarter_independently():
+    # LongTermDebtNoncurrent ve LongTermDebt ayni kavramin ALTERNATIF
+    # etiketleridir (bkz. config.INSTANT_METRICS 'chain' modu aciklamasi).
+    # Gercek AAPL deseni: sirket 2015-Q1/Q2'de gecici olarak
+    # LongTermDebtNoncurrent yerine LongTermDebt kullanmis - bu XBRL
+    # hazirlayici tutarsizligidir, gercek tanim degisikligi degil. Zincir
+    # HER CEYREK icin bagimsiz cozulmeli: sirket genelinde tek etikete
+    # kilitlenip diger ceyregin gercekten var olan verisini "veri yok"
+    # gostermemeli.
     companyfacts = {
         "facts": {
             "us-gaap": {
@@ -165,13 +169,35 @@ def test_instant_metric_does_not_mix_definitions_across_quarters():
         }
     }
     wanted = {"2022-12-31", "2023-03-31"}
-    tag_used, resolved = edgar._resolve_instant_metric(
-        companyfacts, ["LongTermDebtNoncurrent", "LongTermDebt"], wanted
+    resolved = edgar._resolve_instant_metric(
+        companyfacts, {"mode": "chain", "tags": ["LongTermDebtNoncurrent", "LongTermDebt"]}, wanted
     )
 
-    assert tag_used == "LongTermDebtNoncurrent"
-    assert "2022-12-31" in resolved
-    assert "2023-03-31" not in resolved
+    assert resolved["2022-12-31"] == {"val": 500, "tag": "LongTermDebtNoncurrent"}
+    assert resolved["2023-03-31"] == {"val": 600, "tag": "LongTermDebt"}
+
+
+def test_instant_chain_prefers_priority_tag_when_both_report_same_quarter():
+    # Ayni ceyrek icin HER IKI etikette de veri varsa, listede once gelen
+    # (oncelikli) etiket kazanmali - duration metriklerdeki etiket
+    # onceligiyle tutarli (bkz. _dedupe_entries).
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "LongTermDebtNoncurrent": {"units": {"USD": [
+                    _instant("2023-03-31", 500, "10-Q", "2023-05-01"),
+                ]}},
+                "LongTermDebt": {"units": {"USD": [
+                    _instant("2023-03-31", 999, "10-Q", "2023-05-01"),
+                ]}},
+            }
+        }
+    }
+    resolved = edgar._resolve_instant_metric(
+        companyfacts, {"mode": "chain", "tags": ["LongTermDebtNoncurrent", "LongTermDebt"]}, {"2023-03-31"}
+    )
+
+    assert resolved["2023-03-31"] == {"val": 500, "tag": "LongTermDebtNoncurrent"}
 
 
 def test_comparative_fact_mislabeled_with_filing_fy_fp_does_not_corrupt_period():
@@ -379,13 +405,13 @@ def test_build_quarters_computes_eps_and_sums_commercial_paper():
     assert q["metrics"]["short_term_debt"]["value"] == 80
 
 
-def test_additive_component_used_when_primary_tag_missing_for_period():
-    # Gercek AAPL verisinde gozlemlendi: 2014-Q4/2015-Q1/Q2 gibi bazi
-    # ceyreklerde short_term_debt'in ana etiketi (orn. LongTermDebtCurrent)
-    # o donem icin hic veri dondurmuyor, ama tamamlayici CommercialPaper
-    # doluyor. Tamamlayici bilesen ana etikete BAGIMLI olmamali - ana
-    # etiket o ceyrekte yoksa 0 sayilip sadece tamamlayicinin degeri
-    # kullanilmali (bkz. config.INSTANT_ADDITIVE_TAGS aciklamasi).
+def test_sum_component_used_when_other_components_missing_for_period():
+    # Gercek AAPL verisinde gozlemlendi: bazi ceyreklerde short_term_debt'in
+    # bilesenlerinden (ShortTermBorrowings/DebtCurrent/LongTermDebtCurrent)
+    # hicbiri o donem icin veri dondurmuyor, ama CommercialPaper doluyor.
+    # Bilesenler birbirine BAGIMLI olmamali - digerleri o ceyrekte yoksa 0
+    # sayilip sadece bulunan bilesenin degeri kullanilmali (bkz.
+    # config.INSTANT_METRICS 'sum' modu aciklamasi).
     companyfacts = {
         "facts": {
             "us-gaap": {
@@ -398,9 +424,8 @@ def test_additive_component_used_when_primary_tag_missing_for_period():
                 "WeightedAverageNumberOfDilutedSharesOutstanding": {"units": {"shares": [
                     _entry("2023-01-01", "2023-03-31", 100, 2023, "Q1", "10-Q", "2023-05-01"),
                 ]}},
-                # ShortTermBorrowings/DebtCurrent/LongTermDebtCurrent hicbiri
-                # bu ceyrek icin veri dondurmuyor (sirket bu donem icin ana
-                # etiketlerin hicbirini raporlamamis).
+                # DebtCurrent (primary) ve ShortTermBorrowings/LongTermDebtCurrent
+                # (diger bilesenler) hicbiri bu ceyrek icin veri dondurmuyor.
                 "CommercialPaper": {"units": {"USD": [
                     _instant("2023-03-31", 30, "10-Q", "2023-05-01"),
                 ]}},
@@ -412,3 +437,37 @@ def test_additive_component_used_when_primary_tag_missing_for_period():
 
     assert q["metrics"]["short_term_debt"]["value"] == 30
     assert q["metrics"]["short_term_debt"]["tag"] == "CommercialPaper"
+
+
+def test_sum_primary_tag_used_alone_ignoring_components():
+    # DebtCurrent (primary) TEK BASINA zaten toplam bir kalemdir - o ceyrek
+    # icin veri donduruyorsa, ayni ceyrekte CommercialPaper gibi bir bilesen
+    # de raporlanmis olsa bile ikisi toplanmamali (cift sayim). Sadece
+    # primary kullanilmali (bkz. config.INSTANT_METRICS 'sum' modu
+    # aciklamasi).
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "Revenues": {"units": {"USD": [
+                    _entry("2023-01-01", "2023-03-31", 1000, 2023, "Q1", "10-Q", "2023-05-01"),
+                ]}},
+                "NetIncomeLoss": {"units": {"USD": [
+                    _entry("2023-01-01", "2023-03-31", 200, 2023, "Q1", "10-Q", "2023-05-01"),
+                ]}},
+                "WeightedAverageNumberOfDilutedSharesOutstanding": {"units": {"shares": [
+                    _entry("2023-01-01", "2023-03-31", 100, 2023, "Q1", "10-Q", "2023-05-01"),
+                ]}},
+                "DebtCurrent": {"units": {"USD": [
+                    _instant("2023-03-31", 90, "10-Q", "2023-05-01"),
+                ]}},
+                "CommercialPaper": {"units": {"USD": [
+                    _instant("2023-03-31", 30, "10-Q", "2023-05-01"),
+                ]}},
+            }
+        }
+    }
+    quarters = edgar.build_quarters(companyfacts)
+    q = quarters["2023-Q1"]
+
+    assert q["metrics"]["short_term_debt"]["value"] == 90
+    assert q["metrics"]["short_term_debt"]["tag"] == "DebtCurrent"

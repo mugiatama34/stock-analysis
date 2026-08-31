@@ -12,19 +12,24 @@ from stock_analysis import config, errors, pipeline  # noqa: E402
 # eps_diluted config'teki etiket zincirlerinde yok (artik hesaplaniyor,
 # bkz. edgar.build_quarters) ama quarter["metrics"] icinde hala bir anahtar
 # olarak var, bu yuzden ayrica eklenir.
-_QUARTER_METRICS = list(config.DURATION_TAG_PRIORITIES) + list(config.INSTANT_TAG_PRIORITIES) + [
+_QUARTER_METRICS = list(config.DURATION_TAG_PRIORITIES) + list(config.INSTANT_METRICS) + [
     "eps_diluted",
 ]
 
 # Metrik -> koddaki cozumleme sirasinda gercekten DENENEN aday XBRL etiket
-# listesi (config'teki fallback zinciri + varsa toplanan ek bilesenler).
-# tags_used (asagida) sadece deger URETEN etiketleri gosterir; bu ise "hic
-# denenmedi" ile "denendi ama hicbir ceyrekte veri bulunamadi" arasindaki
-# farki ayirt etmek icin gerekli - fallback'in config'e eklenip
-# eklenmedigini, eklendiyse ise veri getirip getirmedigini goruruz.
+# listesi (config'teki oncelik zinciri ya da bilesen toplami - bkz.
+# config.INSTANT_METRICS). tags_used (asagida) sadece deger URETEN
+# etiketleri gosterir; bu ise "hic denenmedi" ile "denendi ama hicbir
+# ceyrekte veri bulunamadi" arasindaki farki ayirt etmek icin gerekli -
+# fallback'in config'e eklenip eklenmedigini, eklendiyse ise veri getirip
+# getirmedigini goruruz.
 _ATTEMPTED_TAGS = {metric: list(tags) for metric, tags in config.DURATION_TAG_PRIORITIES.items()}
-for metric, tags in config.INSTANT_TAG_PRIORITIES.items():
-    _ATTEMPTED_TAGS[metric] = list(tags) + list(config.INSTANT_ADDITIVE_TAGS.get(metric, []))
+for metric, spec in config.INSTANT_METRICS.items():
+    if spec["mode"] == "chain":
+        _ATTEMPTED_TAGS[metric] = list(spec["tags"])
+    else:
+        primary = [spec["primary"]] if spec.get("primary") else []
+        _ATTEMPTED_TAGS[metric] = primary + list(spec["components"])
 # eps_diluted herhangi bir XBRL etiketinden degil, net kar / seyreltilmis
 # hisse adedinden HESAPLANIR (bkz. edgar._resolve_eps_diluted) - denenen
 # etiket listesi kavramsal olarak yok.
@@ -57,7 +62,13 @@ def summarize(data: dict) -> dict:
             if has_value:
                 filled += 1
                 if entry.get("tag"):
-                    tags_used[entry["tag"]] += 1
+                    # "sum" modunda birden fazla bilesen toplandiysa tag
+                    # "TagA+TagB" seklinde gelir (bkz. edgar._resolve_instant_sum);
+                    # her bilesen ayri ayri sayilmali, aksi halde tek basina
+                    # hic gorunmeyip "denendi ama bulunamadi" gibi yanlis
+                    # raporlanir.
+                    for t in entry["tag"].split("+"):
+                        tags_used[t] += 1
             else:
                 missing += 1
 
