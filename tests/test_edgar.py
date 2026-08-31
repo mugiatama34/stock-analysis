@@ -195,6 +195,78 @@ def test_comparative_fact_mislabeled_with_filing_fy_fp_does_not_corrupt_period()
     assert result[(2010, "Q1")]["value"] == 15683
 
 
+def test_average_metric_skips_q4_derivation_but_keeps_annual_marker():
+    # diluted_shares agirlikli ortalamadir: yillik rakamdan Q1+Q2+Q3
+    # cikarilarak Q4 turetilemez (103, 100+105+110=315'in "kalani" degil,
+    # BAGIMSIZ bir yillik ortalamadir). allow_q4_derivation=False ile Q4
+    # sonuc sozlugune hic girmemeli; yillik kayit ise EPS turetmesi icin
+    # (fy, "_annual") altinda ayrica saklanmali.
+    entries = [
+        _entry("2023-01-01", "2023-03-31", 100, 2023, "Q1", "10-Q", "2023-05-01"),
+        _entry("2023-04-01", "2023-06-30", 105, 2023, "Q2", "10-Q", "2023-08-01"),
+        _entry("2023-07-01", "2023-09-30", 110, 2023, "Q3", "10-Q", "2023-11-01"),
+        _entry("2023-01-01", "2023-12-31", 103, 2023, "FY", "10-K", "2024-02-01"),
+    ]
+    result = resolve_duration_quarters(entries, allow_q4_derivation=False)
+
+    assert result[(2023, "Q1")]["value"] == 100
+    assert (2023, "Q4") not in result
+    assert result[(2023, "_annual")]["value"] == 103
+    assert result[(2023, "_annual")]["derived"] is False
+
+
+def test_build_quarters_leaves_q4_diluted_shares_empty_and_derives_eps_from_annual():
+    # net_income (akis) Q4'u eskisi gibi cikararak turetir, ama
+    # diluted_shares (ortalama) Q4'u BOS birakmali; eps_diluted Q4 ise
+    # yillik EPS - (Q1+Q2+Q3 EPS) olarak hesaplanmali.
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "NetIncomeLoss": {"units": {"USD": [
+                    _entry("2023-01-01", "2023-03-31", 200, 2023, "Q1", "10-Q", "2023-05-01"),
+                    _entry("2023-04-01", "2023-06-30", 200, 2023, "Q2", "10-Q", "2023-08-01"),
+                    _entry("2023-07-01", "2023-09-30", 200, 2023, "Q3", "10-Q", "2023-11-01"),
+                    _entry("2023-01-01", "2023-12-31", 1000, 2023, "FY", "10-K", "2024-02-01"),
+                ]}},
+                "WeightedAverageNumberOfDilutedSharesOutstanding": {"units": {"shares": [
+                    _entry("2023-01-01", "2023-03-31", 100, 2023, "Q1", "10-Q", "2023-05-01"),
+                    _entry("2023-04-01", "2023-06-30", 100, 2023, "Q2", "10-Q", "2023-08-01"),
+                    _entry("2023-07-01", "2023-09-30", 100, 2023, "Q3", "10-Q", "2023-11-01"),
+                    _entry("2023-01-01", "2023-12-31", 100, 2023, "FY", "10-K", "2024-02-01"),
+                ]}},
+            }
+        }
+    }
+    quarters = edgar.build_quarters(companyfacts)
+
+    q1 = quarters["2023-Q1"]
+    assert q1["metrics"]["eps_diluted"]["value"] == 2.0
+
+    q4 = quarters["2023-Q4"]
+    assert q4["metrics"]["net_income"]["value"] == 400
+    assert q4["metrics"]["diluted_shares"]["value"] is None
+    assert q4["metrics"]["eps_diluted"]["value"] == 4.0
+
+
+def test_build_quarters_drops_quarters_before_min_fiscal_year():
+    # 2009-Q1 tek basina duruyordu (2009'un diger uc ceyregi companyfacts'te
+    # yok); seri 2010 mali yilindan itibaren baslamali (bkz. config.MIN_FISCAL_YEAR).
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "Revenues": {"units": {"USD": [
+                    _entry("2009-01-01", "2009-03-31", 100, 2009, "Q1", "10-Q", "2009-05-01"),
+                    _entry("2010-01-01", "2010-03-31", 200, 2010, "Q1", "10-Q", "2010-05-01"),
+                ]}},
+            }
+        }
+    }
+    quarters = edgar.build_quarters(companyfacts)
+
+    assert "2009-Q1" not in quarters
+    assert "2010-Q1" in quarters
+
+
 def test_build_quarters_computes_eps_and_sums_commercial_paper():
     companyfacts = {
         "facts": {
