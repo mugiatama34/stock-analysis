@@ -14,6 +14,12 @@ OUTPUT_DIR = "output"
 
 MAX_PEERS = 5
 
+# Seri 2010 mali yilindan itibaren baslar. Daha erken ceyrekler (orn. AAPL
+# icin tek basina duran 2009-Q1 - 2009'un diger uc ceyregi companyfacts'te
+# yok) yaniltici tek-nokta gorunumler birakiyor; build_quarters bu yildan
+# once kalan (fy, fp) anahtarlarini uretmez.
+MIN_FISCAL_YEAR = 2010
+
 # Her metrik icin sirali XBRL us-gaap tag adaylari. Bunlar "duration" (donem
 # boyunca akan) kalemlerdir: gelir tablosu ve nakit akis kalemleri.
 # Sirketler zaman icinde etiket degistirebilir (orn. ASC 606 sonrasi gelir
@@ -73,6 +79,28 @@ DURATION_TAG_PRIORITIES = {
 # gelir-satis maliyeti / net kar-seyreltilmis hisse adedinden hesaplanir
 # (bkz. edgar.build_quarters). Boylece filer'in "brut kar" tanimindaki
 # tutarsizliga bagli kalinmaz.
+
+# DURATION_TAG_PRIORITIES'teki her metrik ya AKIS (donem boyunca biriken,
+# cikarma ile Q4 = yillik - Q1 - Q2 - Q3 turetilebilen) ya da ORTALAMA
+# (agirlikli ortalama bir stok degeri, cikarma islemi ANLAMSIZ) olarak
+# siniflandirilmalidir. diluted_shares agirlikli ortalama hisse adedidir -
+# yillik ortalamadan ilk uc ceyregin ortalamasi cikarilamaz (negatif/hatali
+# sonuc verir, bkz. edgar.resolve_duration_quarters). Yeni bir metrik
+# DURATION_TAG_PRIORITIES'e eklendiginde bu iki kumeden birine ELLE
+# eklenmesi zorunludur; build_quarters bunu dogrular (bkz. assert).
+FLOW_METRICS = {
+    "revenue",
+    "cost_of_revenue",
+    "operating_income",
+    "net_income",
+    "operating_cash_flow",
+    "capex",
+    "depreciation_amortization",
+    "interest_expense",
+}
+AVERAGE_METRICS = {
+    "diluted_shares",
+}
 
 # "instant" (bir tarihteki anlik) kalemler: bilanco kalemleri. Ceyrek sonu
 # tarihine gore dogrudan okunur, turetme yapilmaz. Listedeki etiketler ayni

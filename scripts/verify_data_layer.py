@@ -67,9 +67,13 @@ def summarize(data: dict) -> dict:
             "internal_gap_quarters": internal_gap_quarters,
         }
 
+    ttm = data.get("ttm", {})
+    valuation = data.get("valuation", {})
     return {
         "quarter_count": len(quarters),
         "metrics": metrics_summary,
+        "ttm_eps_diluted": ttm.get("eps_diluted") if ttm.get("available") else None,
+        "valuation_pe": valuation.get("pe") if valuation.get("available") else None,
     }
 
 
@@ -113,6 +117,7 @@ def print_report(ticker: str, data: dict, summary: dict) -> None:
     )
     if ttm.get("available"):
         print(f"TTM: mevcut - donem sonu {ttm.get('period_end')}")
+        print(f"  ttm.eps_diluted: {ttm.get('eps_diluted')}")
         if latest_period_end and ttm.get("period_end") != latest_period_end:
             print(
                 f"  UYARI: TTM donem sonu ({ttm.get('period_end')}) en son bulunan "
@@ -124,6 +129,7 @@ def print_report(ticker: str, data: dict, summary: dict) -> None:
     valuation = data.get("valuation", {})
     if valuation.get("available"):
         print("Degerleme oranlari (P/E, P/S, EV/EBITDA, P/FCF): mevcut")
+        print(f"  valuation.pe: {valuation.get('pe')}")
     else:
         print(f"Degerleme oranlari: veri yok - {valuation.get('reason')}")
 

@@ -158,10 +158,20 @@ def _label_source_entries(entries: list) -> dict:
     return best
 
 
-def resolve_duration_quarters(entries: list) -> dict:
+def resolve_duration_quarters(entries: list, allow_q4_derivation: bool = True) -> dict:
     """Ham SEC fact kayitlarindan (birden fazla etiketten gelmis ve
     _load_priority_entries ile isaretlenmis olabilir) (fiscal_year, "Qn") ->
     {"value", "end", "filed", "form", "derived", "tag"} sozlugu uretir.
+
+    allow_q4_derivation=False: Q4, yillik kayittan Q1+Q2+Q3 cikarilarak
+    TURETILMEZ; sadece dogrudan raporlanmis bir ceyrek kaydi varsa (nadiren)
+    kullanilir, yoksa Q4 sonuc sozluginde hic yer almaz. Bu, AGIRLIKLI
+    ORTALAMA (config.AVERAGE_METRICS, orn. diluted_shares) kalemler icindir:
+    yillik ortalamadan ilk uc ceyregin ortalamasini cikarmak matematiksel
+    olarak gecersizdir (bkz. config.py). Ayrica boyle bir metrik icin,
+    yillik (10-K) kaydin kendisi HER ZAMAN (fy, "_annual") anahtari altinda
+    da dondurulur - Q4 EPS'in yillik EPS'ten turetilmesi icin gerekli
+    (bkz. edgar._resolve_eps_diluted).
 
     ONEMLI: gruplama SEC'in fy/fp alanina DEGIL, fact'in kendi start/end
     tarihine dayanir. Neden: dogrulama sirasinda gercek AAPL verisinde
@@ -176,15 +186,31 @@ def resolve_duration_quarters(entries: list) -> dict:
     basitce YANLIS oluyordu.
 
     Mantik (tamamen tarih tabanli):
-    - Bir "ceyrek" suresi (70-110 gun) kaydi, ONCESINDE (bitis+1 gun =
-      baslangic) baska bir ceyrek kaydi YOKSA yeni bir mali yil dongusunun
-      Q1'i sayilir (donguyu "capa"lar).
-    - Q2/Q3: capadan sonraki gunde baslayan ayrik bir ceyrek kaydi varsa
-      dogrudan kullanilir; yoksa capayla AYNI baslangica sahip kumulatif
-      kayittan (6/9 aylik) onceki ceyreklerin toplami cikarilarak turetilir.
-    - Q4: capayla ayni baslangica sahip yillik (10-K) kayittan Q1+Q2+Q3
-      cikarilarak turetilir. Onceki ceyreklerden biri eksikse zincir orada
-      durur, Q4 (ve varsa sonraki adimlar) "veri yok" kalir.
+    - Bir "ceyrek" suresi (70-110 gun) kaydin BASLANGICI, yillik (10-K,
+      300-380 gun) veya yariyil/9-aylik kumulatif bir kayitla AYNI ise
+      guvenilir bir mali yil "capasi" sayilir - bu her zaman ONCE islenir.
+      NEDEN ONCE: bircok sirket (orn. Apple) her ceyregi ayrik rapor eder
+      ve bir mali yilin Q4'u, bir sonraki mali yilin Q1'ine hicbir bosluk
+      birakmadan (bitis+1 gun = sonraki baslangic) baglanir - "oncesinde
+      baska ceyrek yoksa capadir" testi TEK BASINA kullanilsaydi, coklu
+      yila yayilan kesintisiz bir zincirde sadece ZINCIRIN EN BASINDAKI
+      donem capa sayilir ve zincirdeki SONRAKI TUM yillar hic islenmeden
+      atlanirdi (dogrulama sirasinda gercek AAPL verisinde tam boyle bir
+      hata bulundu: 2011-2021 arasi 44 ceyrek boyle kaybolmustu). Yillik
+      kayit varligi, sahte-kesintisiz zincirin ICINDEKI gercek mali yil
+      sinirlarini guvenilir sekilde isaretler.
+    - Guvenilir capalarca TUKETILMEYEN (henuz kullanilmamis) ceyrek
+      baslangiclari icin, "oncesinde baska ceyrek yok" testi ikincil
+      (bootstrap) capa sinyali olarak kullanilir - bu sadece veri
+      setindeki EN GUNCEL, henuz yillik raporu (10-K) gelmemis mali
+      yilin Q1'ini yakalamak icin gerekli.
+    - Bir capadan itibaren: Q2/Q3, capadan sonraki gunde baslayan ayrik
+      bir ceyrek kaydi varsa dogrudan kullanilir; yoksa capayla AYNI
+      baslangica sahip kumulatif kayittan (6/9 aylik) onceki ceyreklerin
+      toplami cikarilarak turetilir. Q4, capayla ayni baslangica sahip
+      yillik kayittan Q1+Q2+Q3 cikarilarak turetilir (allow_q4_derivation
+      True ise). Onceki ceyreklerden biri eksikse zincir orada durur, Q4
+      (ve varsa sonraki adimlar) "veri yok" kalir.
     - Etiket (fy): bu donguyu capalayan Q1 kaydinin (start,end) ciftini
       ILK raporlayan filing'den alinir (_label_source_entries) - fp ise
       zincirdeki pozisyondan (Q1/Q2/Q3/Q4) dogrudan belirlenir, SEC'in
@@ -222,42 +248,71 @@ def resolve_duration_quarters(entries: list) -> dict:
             "form": source_entry["form"], "derived": derived, "tag": source_entry.get("_tag"),
         }
 
-    result = {}
-    for s_fy, q1 in quarter_by_start.items():
-        if _prev_day(s_fy) in known_quarter_ends:
-            continue  # bu bir mali yil baslangici degil, onceki bir ceyregin devami
-
+    def _build_chain(s_fy, q1):
+        """s_fy'dan baslayan Q1..Q4 zincirini olusturur. Zincirdeki AYRIK
+        (kumulatiften turetilmemis) ceyreklerin quarter_by_start
+        anahtarlarini da dondurur - cagiran bu anahtarlari "tuketildi"
+        olarak isaretleyip ikinci gecişte tekrar capa sanmamali."""
         chain = {"Q1": _mk(q1["val"], q1, False)}
+        consumed = {s_fy}
 
         q2 = quarter_by_start.get(_next_day(q1["end"]))
         if q2 is None:
             half_e = half_by_start.get(s_fy)
             if half_e is None:
-                _emit_cycle(result, s_fy, chain, label_source)
-                continue
+                return chain, consumed
             chain["Q2"] = _mk(half_e["val"] - chain["Q1"]["value"], half_e, True)
         else:
             chain["Q2"] = _mk(q2["val"], q2, False)
+            consumed.add(q2["start"])
 
         q3 = quarter_by_start.get(_next_day(chain["Q2"]["end"]))
         if q3 is None:
             three_q_e = three_q_by_start.get(s_fy)
             if three_q_e is None:
-                _emit_cycle(result, s_fy, chain, label_source)
-                continue
+                return chain, consumed
             prior = chain["Q1"]["value"] + chain["Q2"]["value"]
             chain["Q3"] = _mk(three_q_e["val"] - prior, three_q_e, True)
         else:
             chain["Q3"] = _mk(q3["val"], q3, False)
+            consumed.add(q3["start"])
 
         annual_e = annual_by_start.get(s_fy)
         q4 = quarter_by_start.get(_next_day(chain["Q3"]["end"]))
         if q4 is not None and annual_e is not None and q4["end"] == annual_e["end"]:
             chain["Q4"] = _mk(q4["val"], q4, False)
-        elif annual_e is not None:
+            consumed.add(q4["start"])
+        elif annual_e is not None and allow_q4_derivation:
             prior = chain["Q1"]["value"] + chain["Q2"]["value"] + chain["Q3"]["value"]
             chain["Q4"] = _mk(annual_e["val"] - prior, annual_e, True)
 
+        if annual_e is not None:
+            chain["_annual"] = _mk(annual_e["val"], annual_e, False)
+
+        return chain, consumed
+
+    result = {}
+    consumed_starts = set()
+
+    # 1. gecis: yillik/yariyil/9-aylik kayitla dogrulanmis guvenilir capalar.
+    fiscal_year_starts = set(half_by_start) | set(three_q_by_start) | set(annual_by_start)
+    for s_fy in sorted(fiscal_year_starts):
+        q1 = quarter_by_start.get(s_fy)
+        if q1 is None:
+            continue
+        chain, used = _build_chain(s_fy, q1)
+        consumed_starts |= used
+        _emit_cycle(result, s_fy, chain, label_source)
+
+    # 2. gecis: guvenilir capaca tuketilmemis kalan baslangiclar - sadece
+    # henuz yillik raporu gelmemis en guncel mali yilin Q1'i icin bootstrap.
+    for s_fy, q1 in sorted(quarter_by_start.items()):
+        if s_fy in consumed_starts:
+            continue
+        if _prev_day(s_fy) in known_quarter_ends:
+            continue  # onceki bir ceyregin devami, capa degil
+        chain, used = _build_chain(s_fy, q1)
+        consumed_starts |= used
         _emit_cycle(result, s_fy, chain, label_source)
 
     return result
@@ -318,6 +373,51 @@ def _resolve_instant_metric(companyfacts: dict, tags: list, wanted_ends: set) ->
     return None, {}
 
 
+def _resolve_eps_diluted(duration_results: dict) -> dict:
+    """eps_diluted, XBRL etiketinden degil net kar / seyreltilmis hisse
+    adedinden hesaplanir (bkz. config.py). Q1-Q3: o ceyregin kendi net kari
+    / kendi (dogrudan raporlanmis) seyreltilmis hisse adedi. Q4:
+    diluted_shares agirlikli bir ORTALAMA oldugu icin (config.AVERAGE_METRICS)
+    yillik toplamdan Q1+Q2+Q3 cikarilarak turetilemez (bkz.
+    resolve_duration_quarters) - bunun yerine Q4 EPS = yillik EPS -
+    (Q1 EPS + Q2 EPS + Q3 EPS) olarak hesaplanir; yillik EPS de yillik net
+    kar (Q1..Q4 toplami) / 10-K'da raporlanan yillik agirlikli ortalama
+    hisse adedinden ((fy, "_annual") kaydi) gelir. Herhangi bir bilesen
+    eksikse Q4 EPS 'veri yok' kalir, tahmini bir deger uretilmez."""
+    net_income_q = duration_results.get("net_income", {})
+    diluted_shares_q = duration_results.get("diluted_shares", {})
+
+    fiscal_years = {fy for fy, fp in net_income_q if fp in QUARTER_LABELS}
+
+    eps = {}
+    for fy in fiscal_years:
+        q_eps = {}
+        for fp in ("Q1", "Q2", "Q3"):
+            ni = net_income_q.get((fy, fp))
+            ds = diluted_shares_q.get((fy, fp))
+            if ni is not None and ds is not None and ds["value"]:
+                value = ni["value"] / ds["value"]
+                q_eps[fp] = value
+                eps[(fy, fp)] = value
+
+        ni_q4 = net_income_q.get((fy, "Q4"))
+        annual_ds = diluted_shares_q.get((fy, "_annual"))
+        if ni_q4 is not None and annual_ds is not None and annual_ds["value"] and len(q_eps) == 3:
+            annual_net_income = ni_q4["value"] + sum(
+                net_income_q[(fy, fp)]["value"] for fp in ("Q1", "Q2", "Q3")
+            )
+            annual_eps = annual_net_income / annual_ds["value"]
+            eps[(fy, "Q4")] = annual_eps - (q_eps["Q1"] + q_eps["Q2"] + q_eps["Q3"])
+
+    return eps
+
+
+assert set(config.DURATION_TAG_PRIORITIES) == config.FLOW_METRICS | config.AVERAGE_METRICS, (
+    "DURATION_TAG_PRIORITIES'teki her metrik config.FLOW_METRICS veya "
+    "config.AVERAGE_METRICS icinde tam olarak bir kez siniflandirilmis olmali."
+)
+
+
 def build_quarters(companyfacts: dict, cached_quarters: dict = None) -> dict:
     """companyfacts JSON'undan, cache'te henuz OLMAYAN ceyrekleri isler ve
     dondurur. cache.py bu sonucu mevcut cache ile birlestirir.
@@ -334,13 +434,24 @@ def build_quarters(companyfacts: dict, cached_quarters: dict = None) -> dict:
         combined_raw = _load_priority_entries(companyfacts, tags)
         if not combined_raw:
             continue
-        resolved = resolve_duration_quarters(combined_raw)
+        resolved = resolve_duration_quarters(
+            combined_raw, allow_q4_derivation=metric in config.FLOW_METRICS
+        )
         if resolved:
             duration_results[metric] = resolved
 
+    eps_by_key = _resolve_eps_diluted(duration_results)
+
+    # (fy, "_annual") gibi yardimci anahtarlar gercek bir ceyrek degildir,
+    # ve config.MIN_FISCAL_YEAR'dan once kalan ceyrekler seriye hic girmez
+    # (bkz. config.py notu - orn. AAPL'de tek basina duran 2009-Q1).
     all_keys = set()
     for quarters in duration_results.values():
-        all_keys |= set(quarters.keys())
+        all_keys |= {
+            (fy, fp)
+            for fy, fp in quarters
+            if fp in QUARTER_LABELS and fy >= config.MIN_FISCAL_YEAR
+        }
 
     new_keys = [
         (fy, fp) for fy, fp in sorted(all_keys) if f"{fy}-{fp}" not in cached_quarters
@@ -389,13 +500,8 @@ def build_quarters(companyfacts: dict, cached_quarters: dict = None) -> dict:
                 metrics[metric] = {"value": rf["value"], "tag": rf.get("tag"), "derived": rf["derived"]}
 
         # eps_diluted: XBRL etiketinden degil, net kar / seyreltilmis hisse
-        # adedinden hesaplanir (bkz. config.py notu, madde 5).
-        net_income = metrics["net_income"]["value"]
-        diluted_shares = metrics["diluted_shares"]["value"]
-        eps_value = None
-        if net_income is not None and diluted_shares:
-            eps_value = net_income / diluted_shares
-        metrics["eps_diluted"] = {"value": eps_value, "tag": None, "derived": True}
+        # adedinden hesaplanir (bkz. _resolve_eps_diluted).
+        metrics["eps_diluted"] = {"value": eps_by_key.get((fy, fp)), "tag": None, "derived": True}
 
         for metric, (tag_used, resolved) in instant_results.items():
             value = None
