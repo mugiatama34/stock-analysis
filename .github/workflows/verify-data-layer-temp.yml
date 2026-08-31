@@ -35,6 +35,9 @@ jobs:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
         run: python scripts/verify_data_layer.py "${{ inputs.ticker }}"
 
+      - name: Raporu render et
+        run: python scripts/render_report.py "${{ steps.ticker.outputs.upper }}"
+
       - name: Sonuclari artifact olarak yukle
         if: always()
         uses: actions/upload-artifact@v4
@@ -44,4 +47,5 @@ jobs:
             output/${{ steps.ticker.outputs.upper }}.json
             output/${{ steps.ticker.outputs.upper }}_verify_summary.json
             cache/${{ steps.ticker.outputs.upper }}.json
+            reports/${{ steps.ticker.outputs.upper }}.html
           if-no-files-found: warn
