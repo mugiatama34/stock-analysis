@@ -206,32 +206,6 @@ def main() -> None:
     summary = summarize(data)
     print_report(args.ticker.upper(), data, summary)
 
-    print()
-    print("=" * 70)
-    print("GECICI: total_debt / net_debt dogrulama gorev raporu")
-    print("=" * 70)
-    quarters = data["quarters"]
-    for qkey in ["2026-Q3"]:
-        q = quarters.get(qkey)
-        if q:
-            dm = q["derived_metrics"]
-            print(f"{qkey}: total_debt={dm['total_debt']} net_debt={dm['net_debt']}")
-            print(f"  short_term_debt={q['metrics']['short_term_debt']}")
-            print(f"  long_term_debt={q['metrics']['long_term_debt']}")
-            print(f"  cash_and_equivalents={q['metrics']['cash_and_equivalents']}")
-        else:
-            print(f"{qkey}: bulunamadi")
-    for qkey in ["2015-Q1", "2015-Q2", "2015-Q3"]:
-        q = quarters.get(qkey)
-        if q:
-            dm = q["derived_metrics"]
-            print(f"{qkey}: total_debt={dm['total_debt']}")
-            print(f"  short_term_debt={q['metrics']['short_term_debt']}")
-            print(f"  long_term_debt={q['metrics']['long_term_debt']}")
-        else:
-            print(f"{qkey}: bulunamadi")
-    print("=" * 70)
-
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
     ticker = args.ticker.upper()
 
