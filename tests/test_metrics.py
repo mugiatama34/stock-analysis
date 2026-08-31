@@ -3,7 +3,13 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from stock_analysis.metrics import compute_quarter_derived, compute_ttm, latest_quarter
+from stock_analysis.metrics import (
+    compute_quarter_derived,
+    compute_ttm,
+    compute_valuation_context,
+    compute_valuation_history,
+    latest_quarter,
+)
 
 
 def _m(value):
@@ -91,3 +97,77 @@ def test_ttm_period_end_always_matches_latest_resolved_quarter():
 
     assert ttm["available"] is True
     assert ttm["period_end"] == latest["period_end"]
+
+
+def _val_quarter(period_end, revenue, eps, shares):
+    metrics = dict(_BASE_METRICS)
+    metrics["revenue"] = _m(revenue)
+    metrics["eps_diluted"] = _m(eps)
+    metrics["diluted_shares"] = _m(shares)
+    metrics["operating_cash_flow"] = _m(None)
+    metrics["capex"] = _m(None)
+    metrics["operating_income"] = _m(None)
+    metrics["depreciation_amortization"] = _m(None)
+    return {"period_end": period_end, "metrics": metrics}
+
+
+def test_valuation_history_needs_four_quarters_before_producing_a_ratio():
+    # Ilk 3 ceyrekte trailing-TTM penceresi tamamlanmadigi icin hicbir oran
+    # uretilmemeli; 4. ceyrekte (indeks 3) ilk P/E ortaya cikmali.
+    quarters = {
+        f"2023-Q{i}": _val_quarter(f"2023-{i * 3:02d}-28", 100, 1.0, 50)
+        for i in range(1, 5)
+    }
+    price_history = [{"date": f"2023-{i * 3:02d}-28", "close": 20.0} for i in range(1, 5)]
+
+    history = compute_valuation_history(quarters, price_history)
+
+    assert len(history["pe"]) == 1
+    # TTM EPS = 1.0 * 4 = 4.0; fiyat 20.0 -> P/E = 5.0
+    assert history["pe"][0] == 5.0
+    # TTM revenue = 100*4=400; market_cap = price*shares = 20*50=1000 -> P/S=2.5
+    assert history["ps"][0] == 2.5
+
+
+def test_valuation_history_skips_quarter_without_matching_price():
+    # price_history'de bir ceyrek sonundan ONCE hic islem gunu yoksa o
+    # ceyrek tahmini bir fiyatla doldurulmamali, tamamen atlanmali.
+    quarters = {
+        f"2023-Q{i}": _val_quarter(f"2023-{i * 3:02d}-28", 100, 1.0, 50)
+        for i in range(1, 5)
+    }
+    price_history = [{"date": "2023-12-29", "close": 20.0}]  # tum ceyrek sonlarindan sonra
+
+    history = compute_valuation_history(quarters, price_history)
+
+    assert history["pe"] == []
+    assert history["ps"] == []
+
+
+def test_valuation_context_status_thresholds():
+    # 12'nin altinda -> yuzdelik yok (insufficient_history). 12-19 arasi ->
+    # yuzdelik hesaplanir ama kac ceyrege dayandigi bildirilir. Veri hic
+    # yoksa (bos seri) -> no_data.
+    valuation = {"available": True, "pe": 10.0, "ps": None, "ev_ebitda": 5.0, "p_fcf": 5.0}
+    history = {
+        "pe": [5.0] * 11,
+        "ps": [],
+        "ev_ebitda": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0],
+        "p_fcf": [],
+    }
+
+    context = compute_valuation_context(history, valuation)
+
+    assert context["pe"]["status"] == "insufficient_history"
+    assert context["pe"]["quarters_used"] == 11
+    assert context["ps"]["status"] == "no_data"
+    assert context["ev_ebitda"]["status"] == "ok"
+    assert context["ev_ebitda"]["quarters_used"] == 12
+    # ev_ebitda=5.0 gecmis serisinde <=5.0 olan 5 nokta var (1,2,3,4,5) / 12
+    assert round(context["ev_ebitda"]["percentile"], 2) == round(5 / 12 * 100, 2)
+    assert context["p_fcf"]["status"] == "no_data"
+
+
+def test_valuation_context_unavailable_when_valuation_not_available():
+    context = compute_valuation_context({"pe": [1.0] * 20}, {"available": False, "reason": "x"})
+    assert context == {}

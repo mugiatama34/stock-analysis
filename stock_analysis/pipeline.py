@@ -49,6 +49,8 @@ def fetch_stock_data(ticker: str) -> dict:
         cash=cash_value,
         total_debt=total_debt,
     )
+    valuation_history = metrics.compute_valuation_history(all_quarters, price_history)
+    valuation_context = metrics.compute_valuation_context(valuation_history, valuation)
 
     peers = finnhub_source.fetch_peers(ticker)
 
@@ -66,6 +68,8 @@ def fetch_stock_data(ticker: str) -> dict:
         "quarters": all_quarters,
         "ttm": ttm,
         "valuation": valuation,
+        "valuation_history": valuation_history,
+        "valuation_context": valuation_context,
         "price_history": price_history,
         "peers": peers,
     }

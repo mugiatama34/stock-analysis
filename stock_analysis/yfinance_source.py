@@ -9,6 +9,7 @@ _INFO_FIELDS = {
     "market_cap": "marketCap",
     "current_price": "currentPrice",
     "shares_outstanding": "sharesOutstanding",
+    "business_summary": "longBusinessSummary",
 }
 
 

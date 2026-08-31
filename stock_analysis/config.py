@@ -247,3 +247,16 @@ FINANCIAL_SECTOR_KEYWORDS = [
     "reit",
     "real estate investment trust",
 ]
+
+# Render katmani (CLAUDE.md > Rapor katmani > KAPSAM KURALI): bir metrik,
+# bulunan ceyreklerin bu oranindan azinda doluysa render'da gizlenir.
+RENDER_COVERAGE_THRESHOLD = 0.30
+
+# Degerleme yuzdelik konumu (CLAUDE.md > Metrikler > Degerleme) icin
+# kullanilan gecmis ceyrek penceresi: en fazla 20 (5 yil), yuzdelik
+# hesaplamak icin asgari 12 ceyrek gerekir - daha azsa sadece ham oran
+# gosterilir (bkz. metrics.compute_valuation_context).
+VALUATION_HISTORY_MAX_QUARTERS = 20
+VALUATION_HISTORY_MIN_QUARTERS = 12
+
+REPORTS_DIR = "reports"
