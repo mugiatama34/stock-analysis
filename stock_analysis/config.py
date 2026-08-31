@@ -192,6 +192,35 @@ INSTANT_METRICS = {
             "LongTermDebt": "LongTermDebtCurrent",
         },
     },
+    # total_debt: UCUNCU COZUMLEME MODU, "chain_with_fallback". Once "tags"
+    # listesindeki TEK PARCA toplam borc etiketleri (short_term_debt/
+    # long_term_debt gibi ayri kalemlere degil, sirketin dogrudan raporladigi
+    # TEK bir "toplam borc" kavramina karsilik gelir) HER CEYREK icin
+    # BAGIMSIZ denenir - "chain" moduyla ayni kural (bkz. yukarida). Hicbiri
+    # o ceyrek icin veri dondurmuyorsa, "fallback_metrics" listesindeki
+    # metriklerin (short_term_debt + long_term_debt) O CEYREK icin ZATEN
+    # COZULMUS degerleri toplanir (bkz. edgar._resolve_instant_chain_with_fallback);
+    # INSTANT_METRICS sozlugunde bu metriklerden SONRA tanimlanmis olmasi
+    # gerekir (build_quarters metrikleri sozluk sirasina gore cozer).
+    #
+    # DebtAndCapitalLeaseObligations KIRALAMA YUKUMLULUKLERINI de icerir -
+    # bu, short_term_debt + long_term_debt toplaminin (sadece finansal
+    # borclanmayi kapsar, kira yukumlulugu haric) kapsamindan FARKLIDIR.
+    # Iki taban arasinda CIKARMA/DUZELTME YAPILMAZ (subtract_when_using
+    # burada yok) - farkli kapsamlari birbirine gecici olarak esitlemek bir
+    # tahmin islemi olurdu. Bunun yerine hangi tabanin kullanildigi "tag"
+    # alaninda (dogrudan etiket adi ya da fallback icin
+    # "short_term_debt+long_term_debt") isaretlenir ve
+    # scripts/verify_data_layer.py ceyrek bazinda raporlar - boylece rapor
+    # katmani (ileride) gerekirse iki tabani ayri gosterebilir.
+    "total_debt": {
+        "mode": "chain_with_fallback",
+        "tags": [
+            "DebtAndCapitalLeaseObligations",
+            "DebtLongtermAndShorttermCombinedAmount",
+        ],
+        "fallback_metrics": ["short_term_debt", "long_term_debt"],
+    },
 }
 
 # Bilanco (INSTANT_METRICS) serilerinde ETIKET DEGISTIGI ceyrekte, degerin

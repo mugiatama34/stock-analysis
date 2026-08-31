@@ -288,6 +288,179 @@ def test_instant_chain_subtract_does_not_apply_to_primary_tag():
     assert resolved["2023-03-31"] == {"val": 500, "tag": "LongTermDebtNoncurrent"}
 
 
+def test_chain_with_fallback_uses_direct_single_piece_tag_when_available():
+    # total_debt deseni (bkz. config.INSTANT_METRICS): sirket tek parca bir
+    # toplam borc etiketi (DebtAndCapitalLeaseObligations) raporlamissa bu
+    # DOGRUDAN kullanilmali - short_term_debt/long_term_debt bilesenlerinin
+    # zaten cozulmus (ve BILEREK cok farkli) degerlerine hic bakilmamali.
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "DebtAndCapitalLeaseObligations": {"units": {"USD": [
+                    _instant("2023-03-31", 700, "10-Q", "2023-05-01"),
+                ]}},
+            }
+        }
+    }
+    resolved_so_far = {
+        "short_term_debt": {"2023-03-31": {"val": 111, "tag": "DebtCurrent"}},
+        "long_term_debt": {"2023-03-31": {"val": 222, "tag": "LongTermDebtNoncurrent"}},
+    }
+    resolved = edgar._resolve_instant_chain_with_fallback(
+        companyfacts,
+        ["DebtAndCapitalLeaseObligations", "DebtLongtermAndShorttermCombinedAmount"],
+        {"2023-03-31"},
+        ["short_term_debt", "long_term_debt"],
+        resolved_so_far,
+    )
+
+    assert resolved["2023-03-31"] == {"val": 700, "tag": "DebtAndCapitalLeaseObligations"}
+
+
+def test_chain_with_fallback_first_tag_wins_when_both_direct_tags_present():
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "DebtAndCapitalLeaseObligations": {"units": {"USD": [
+                    _instant("2023-03-31", 700, "10-Q", "2023-05-01"),
+                ]}},
+                "DebtLongtermAndShorttermCombinedAmount": {"units": {"USD": [
+                    _instant("2023-03-31", 999, "10-Q", "2023-05-01"),
+                ]}},
+            }
+        }
+    }
+    resolved = edgar._resolve_instant_chain_with_fallback(
+        companyfacts,
+        ["DebtAndCapitalLeaseObligations", "DebtLongtermAndShorttermCombinedAmount"],
+        {"2023-03-31"},
+        ["short_term_debt", "long_term_debt"],
+        {},
+    )
+
+    assert resolved["2023-03-31"] == {"val": 700, "tag": "DebtAndCapitalLeaseObligations"}
+
+
+def test_chain_with_fallback_sums_components_when_no_direct_tag_reported():
+    # Sirket hicbir tek-parca toplam borc etiketi raporlamamis (AAPL/F
+    # deseni) - short_term_debt + long_term_debt'in ONCEDEN cozulmus
+    # degerlerine dusulmeli, tag "short_term_debt+long_term_debt" olarak
+    # isaretlenmeli (bkz. config.INSTANT_METRICS total_debt aciklamasi).
+    companyfacts = {"facts": {"us-gaap": {}}}
+    resolved_so_far = {
+        "short_term_debt": {"2023-03-31": {"val": 100, "tag": "DebtCurrent"}},
+        "long_term_debt": {"2023-03-31": {"val": 4800, "tag": "LongTermDebt"}},
+    }
+    resolved = edgar._resolve_instant_chain_with_fallback(
+        companyfacts,
+        ["DebtAndCapitalLeaseObligations", "DebtLongtermAndShorttermCombinedAmount"],
+        {"2023-03-31"},
+        ["short_term_debt", "long_term_debt"],
+        resolved_so_far,
+    )
+
+    assert resolved["2023-03-31"] == {"val": 4900, "tag": "short_term_debt+long_term_debt"}
+
+
+def test_chain_with_fallback_sum_treats_missing_component_as_absent_not_error():
+    # Sadece long_term_debt cozulmus, short_term_debt bu ceyrek icin hic
+    # veri dondurmemis - fallback toplaminda eksik bilesen 0 sayilir
+    # (mevcut short_term_debt + long_term_debt davranisiyla tutarli).
+    companyfacts = {"facts": {"us-gaap": {}}}
+    resolved_so_far = {
+        "long_term_debt": {"2023-03-31": {"val": 4800, "tag": "LongTermDebt"}},
+    }
+    resolved = edgar._resolve_instant_chain_with_fallback(
+        companyfacts,
+        ["DebtAndCapitalLeaseObligations", "DebtLongtermAndShorttermCombinedAmount"],
+        {"2023-03-31"},
+        ["short_term_debt", "long_term_debt"],
+        resolved_so_far,
+    )
+
+    assert resolved["2023-03-31"] == {"val": 4800, "tag": "long_term_debt"}
+
+
+def test_chain_with_fallback_leaves_quarter_empty_when_neither_path_has_data():
+    companyfacts = {"facts": {"us-gaap": {}}}
+    resolved = edgar._resolve_instant_chain_with_fallback(
+        companyfacts,
+        ["DebtAndCapitalLeaseObligations", "DebtLongtermAndShorttermCombinedAmount"],
+        {"2023-03-31"},
+        ["short_term_debt", "long_term_debt"],
+        {},
+    )
+
+    assert "2023-03-31" not in resolved
+
+
+def test_build_quarters_total_debt_falls_back_to_short_plus_long_term_debt():
+    # Uctan uca: hicbir tek-parca toplam borc etiketi yok, sadece
+    # short_term_debt/long_term_debt bilesenleri var - total_debt bunlarin
+    # toplamina dusmeli ve yolu "tag" alaninda isaretlemeli.
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "Revenues": {"units": {"USD": [
+                    _entry("2023-01-01", "2023-03-31", 1000, 2023, "Q1", "10-Q", "2023-05-01"),
+                ]}},
+                "NetIncomeLoss": {"units": {"USD": [
+                    _entry("2023-01-01", "2023-03-31", 200, 2023, "Q1", "10-Q", "2023-05-01"),
+                ]}},
+                "WeightedAverageNumberOfDilutedSharesOutstanding": {"units": {"shares": [
+                    _entry("2023-01-01", "2023-03-31", 100, 2023, "Q1", "10-Q", "2023-05-01"),
+                ]}},
+                "DebtCurrent": {"units": {"USD": [
+                    _instant("2023-03-31", 100, "10-Q", "2023-05-01"),
+                ]}},
+                "LongTermDebtNoncurrent": {"units": {"USD": [
+                    _instant("2023-03-31", 4800, "10-Q", "2023-05-01"),
+                ]}},
+            }
+        }
+    }
+    quarters = edgar.build_quarters(companyfacts)
+    q = quarters["2023-Q1"]
+
+    assert q["metrics"]["total_debt"]["value"] == 4900
+    assert q["metrics"]["total_debt"]["tag"] == "short_term_debt+long_term_debt"
+
+
+def test_build_quarters_total_debt_uses_direct_tag_over_component_sum():
+    # DebtAndCapitalLeaseObligations raporlanmissa (kiralama yukumluluklerini
+    # de icerir) DOGRUDAN kullanilmali - short_term_debt/long_term_debt
+    # toplamina (farkli kapsam) DUSULMEMELI.
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "Revenues": {"units": {"USD": [
+                    _entry("2023-01-01", "2023-03-31", 1000, 2023, "Q1", "10-Q", "2023-05-01"),
+                ]}},
+                "NetIncomeLoss": {"units": {"USD": [
+                    _entry("2023-01-01", "2023-03-31", 200, 2023, "Q1", "10-Q", "2023-05-01"),
+                ]}},
+                "WeightedAverageNumberOfDilutedSharesOutstanding": {"units": {"shares": [
+                    _entry("2023-01-01", "2023-03-31", 100, 2023, "Q1", "10-Q", "2023-05-01"),
+                ]}},
+                "DebtCurrent": {"units": {"USD": [
+                    _instant("2023-03-31", 100, "10-Q", "2023-05-01"),
+                ]}},
+                "LongTermDebtNoncurrent": {"units": {"USD": [
+                    _instant("2023-03-31", 4800, "10-Q", "2023-05-01"),
+                ]}},
+                "DebtAndCapitalLeaseObligations": {"units": {"USD": [
+                    _instant("2023-03-31", 5300, "10-Q", "2023-05-01"),
+                ]}},
+            }
+        }
+    }
+    quarters = edgar.build_quarters(companyfacts)
+    q = quarters["2023-Q1"]
+
+    assert q["metrics"]["total_debt"]["value"] == 5300
+    assert q["metrics"]["total_debt"]["tag"] == "DebtAndCapitalLeaseObligations"
+
+
 def test_comparative_fact_mislabeled_with_filing_fy_fp_does_not_corrupt_period():
     # Gercek AAPL verisinde gozlemlenen desen: bir filing'in icindeki
     # KARSILASTIRMALI (bir onceki yilin ayni ceyregi) fact, kendi donemi

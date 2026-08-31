@@ -27,6 +27,16 @@ _ATTEMPTED_TAGS = {metric: list(tags) for metric, tags in config.DURATION_TAG_PR
 for metric, spec in config.INSTANT_METRICS.items():
     if spec["mode"] == "chain":
         _ATTEMPTED_TAGS[metric] = list(spec["tags"])
+    elif spec["mode"] == "chain_with_fallback":
+        # Dogrudan denenen XBRL etiketlerinin yanina fallback_metrics'i de
+        # AYRI AYRI (join edilmemis) ekler - asagidaki tags_used sayaci
+        # "tag" alanini "+" ile SPLIT ederek sayiyor (sum modundaki bilesen
+        # etiketleriyle ayni kural, bkz. edgar._resolve_instant_chain_with_fallback
+        # "tag" aciklamasi); join edilmis tek bir string burada eklenirse
+        # tags_used'daki split edilmis anahtarlarla hicbir zaman eslesmez
+        # ve fallback fiilen kullanilsa bile "denendi ama bulunamadi"
+        # gorunurdu.
+        _ATTEMPTED_TAGS[metric] = list(spec["tags"]) + list(spec["fallback_metrics"])
     else:
         primary = [spec["primary"]] if spec.get("primary") else []
         _ATTEMPTED_TAGS[metric] = primary + list(spec["components"])
