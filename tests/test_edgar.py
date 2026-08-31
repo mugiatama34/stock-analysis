@@ -195,6 +195,36 @@ def test_comparative_fact_mislabeled_with_filing_fy_fp_does_not_corrupt_period()
     assert result[(2010, "Q1")]["value"] == 15683
 
 
+def test_multi_year_continuous_discrete_chain_resolves_every_fiscal_year():
+    # Gercek AAPL deseni: sirket HER ceyregi ayrik raporluyor ve bir mali
+    # yilin Q4'u, bir sonrakinin Q1'ine HICBIR BOSLUK BIRAKMADAN baglaniyor
+    # (Q4 bitisi + 1 gun = sonraki Q1 baslangici) - iki mali yil boyunca
+    # kesintisiz bir zincir. Sadece "oncesinde ceyrek yoksa capadir" testi
+    # kullanilsaydi tek bir capa bulunur ve SADECE ILK 4 ceyrek islenir,
+    # ikinci yil tamamen kaybolurdu. Yillik (10-K) kayitlar iki ayri capayi
+    # dogru sekilde isaretlemeli.
+    entries = [
+        # FY2022: 2022-01-01 .. 2022-12-31
+        _entry("2022-01-01", "2022-03-31", 100, 2022, "Q1", "10-Q", "2022-05-01"),
+        _entry("2022-04-01", "2022-06-30", 110, 2022, "Q2", "10-Q", "2022-08-01"),
+        _entry("2022-07-01", "2022-09-30", 120, 2022, "Q3", "10-Q", "2022-11-01"),
+        _entry("2022-01-01", "2022-12-31", 460, 2022, "FY", "10-K", "2023-02-01"),
+        # FY2023: 2023-01-01 .. 2023-12-31, hicbir bosluk olmadan devam ediyor
+        _entry("2023-01-01", "2023-03-31", 130, 2023, "Q1", "10-Q", "2023-05-01"),
+        _entry("2023-04-01", "2023-06-30", 140, 2023, "Q2", "10-Q", "2023-08-01"),
+        _entry("2023-07-01", "2023-09-30", 150, 2023, "Q3", "10-Q", "2023-11-01"),
+        _entry("2023-01-01", "2023-12-31", 580, 2023, "FY", "10-K", "2024-02-01"),
+    ]
+    result = resolve_duration_quarters(entries)
+
+    assert result[(2022, "Q1")]["value"] == 100
+    assert result[(2022, "Q4")]["value"] == 130  # 460 - (100+110+120)
+    assert result[(2023, "Q1")]["value"] == 130
+    assert result[(2023, "Q2")]["value"] == 140
+    assert result[(2023, "Q3")]["value"] == 150
+    assert result[(2023, "Q4")]["value"] == 160  # 580 - (130+140+150)
+
+
 def test_average_metric_skips_q4_derivation_but_keeps_annual_marker():
     # diluted_shares agirlikli ortalamadir: yillik rakamdan Q1+Q2+Q3
     # cikarilarak Q4 turetilemez (103, 100+105+110=315'in "kalani" degil,
