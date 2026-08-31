@@ -490,6 +490,10 @@ main {
   font-size: 0.85rem;
 }
 
+.peer-table td:not(:first-child) {
+  white-space: nowrap;
+}
+
 .peer-table th:first-child,
 .peer-table td:first-child {
   width: 90px;

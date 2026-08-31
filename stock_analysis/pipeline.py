@@ -61,6 +61,7 @@ def fetch_stock_data(ticker: str) -> dict:
         "sector": company_info.get("sector"),
         "industry": company_info.get("industry"),
         "employees": company_info.get("employees"),
+        "business_summary": company_info.get("business_summary"),
         "market_cap": company_info.get("market_cap"),
         "current_price": company_info.get("current_price"),
         "shares_outstanding": company_info.get("shares_outstanding"),
