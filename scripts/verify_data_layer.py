@@ -195,14 +195,6 @@ def main() -> None:
     summary = summarize(data)
     print_report(args.ticker.upper(), data, summary)
 
-    # GECICI: bolunme normalizasyonu duzeltmesini dogrulamak icin bilinen
-    # sorunlu ceyreklerin eps_diluted degerini ayrica bas.
-    for qkey in ("2012-Q4", "2018-Q4"):
-        q = data.get("quarters", {}).get(qkey)
-        if q:
-            print(f"[GECICI KONTROL] {qkey} eps_diluted: {q['metrics']['eps_diluted']['value']}")
-            print(f"[GECICI KONTROL] {qkey} diluted_shares: {q['metrics']['diluted_shares']['value']}")
-
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
     ticker = args.ticker.upper()
 
