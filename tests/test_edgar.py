@@ -174,6 +174,27 @@ def test_instant_metric_does_not_mix_definitions_across_quarters():
     assert "2023-03-31" not in resolved
 
 
+def test_comparative_fact_mislabeled_with_filing_fy_fp_does_not_corrupt_period():
+    # Gercek AAPL verisinde gozlemlenen desen: bir filing'in icindeki
+    # KARSILASTIRMALI (bir onceki yilin ayni ceyregi) fact, kendi donemi
+    # yerine ICINDE GECTIGI filing'in guncel fy/fp'sini tasiyor. Iki farkli
+    # gercek donem (2008-Q1 ve 2009-Q1) SEC verisinde ayni fy/fp=(2010,Q1)
+    # etiketini paylasiyor - gruplama fy/fp'ye degil tarihe dayanmali.
+    entries = [
+        # 2008-Q1'in kendi ozgun (dogru etiketli) filing'i.
+        _entry("2008-09-28", "2008-12-27", 11880, 2009, "Q1", "10-Q", "2009-01-25"),
+        # AYNI donem, FY2010-Q1 10-Q'sundaki YoY karsilastirma olarak tekrar
+        # gorunuyor - SEC bunu YANLIS sekilde fy=2010,fp=Q1 etiketlemis.
+        _entry("2008-09-28", "2008-12-27", 11880, 2010, "Q1", "10-Q", "2010-01-25"),
+        # Gercek 2009-Q1 (=FY2010 Q1), ayni filing'in GUNCEL ceyregi.
+        _entry("2009-09-27", "2009-12-26", 15683, 2010, "Q1", "10-Q", "2010-01-25"),
+    ]
+    result = resolve_duration_quarters(entries)
+
+    assert result[(2009, "Q1")]["value"] == 11880
+    assert result[(2010, "Q1")]["value"] == 15683
+
+
 def test_build_quarters_computes_eps_and_sums_commercial_paper():
     companyfacts = {
         "facts": {

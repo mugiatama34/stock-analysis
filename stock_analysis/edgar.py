@@ -1,7 +1,6 @@
 import json
 import os
-from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 
 import requests
 
@@ -118,89 +117,166 @@ def _load_priority_entries(companyfacts: dict, tags: list) -> list:
     return combined
 
 
+def _next_day(iso_date: str) -> str:
+    return (date.fromisoformat(iso_date) + timedelta(days=1)).isoformat()
+
+
+def _prev_day(iso_date: str) -> str:
+    return (date.fromisoformat(iso_date) - timedelta(days=1)).isoformat()
+
+
+def _classify_duration(days: int):
+    """Bir fact'in sure (gun) uzunlugundan hangi donem TURUNU temsil
+    ettigini tahmin eder. fy/fp alanina degil, sadece gercek tarih
+    araligina dayanir - bkz. resolve_duration_quarters docstring'i."""
+    if 70 <= days <= 110:
+        return "quarter"
+    if 150 <= days <= 200:
+        return "half"
+    if 250 <= days <= 299:
+        return "three_q"
+    if 300 <= days <= 380:
+        return "annual"
+    return None
+
+
+def _label_source_entries(entries: list) -> dict:
+    """(start, end) -> o donemi ILK raporlayan (en erken 'filed') kayit.
+    Etiketleme (fy, fp) icin kullanilir: bir sirket bir donemi henuz
+    yasanmadan raporlayamayacagi icin, bir donemi ilk raporlayan filing
+    o donemi HER ZAMAN guncel (comparative degil) ceyrek olarak
+    raporluyordur - bu yuzden SEC'in o spesifik kayda atadigi fy/fp en
+    guvenilir olandir (bkz. resolve_duration_quarters docstring'i)."""
+    best = {}
+    for e in entries:
+        if "start" not in e or "end" not in e:
+            continue
+        key = (e["start"], e["end"])
+        cur = best.get(key)
+        if cur is None or e.get("filed", "") < cur.get("filed", ""):
+            best[key] = e
+    return best
+
+
 def resolve_duration_quarters(entries: list) -> dict:
     """Ham SEC fact kayitlarindan (birden fazla etiketten gelmis ve
     _load_priority_entries ile isaretlenmis olabilir) (fiscal_year, "Qn") ->
     {"value", "end", "filed", "form", "derived", "tag"} sozlugu uretir.
 
-    Mantik:
-    - Q1: kumulatif zaten ceyregin kendisi (start = mali yil baslangici).
-      Sure ~70-110 gun disindaki kayitlar (yanlis fy/fp etiketlenmis olabilir)
-      elenir.
-    - Q2/Q3: ayrik 3 aylik kayit varsa (sure ~70-100 gun) dogrudan kullanilir;
-      yoksa kumulatif kayittan (6/9 aylik) onceki ceyreklerin toplami
-      cikarilarak turetilir.
-    - Q4: dogrudan hicbir zaman gelmez (10-K sadece yillik verir). Yillik
-      toplamdan Q1+Q2+Q3 cikarilarak turetilir. Onceki ceyreklerden biri
-      eksikse Q4 de "veri yok" kalir. Q1/Q2/Q3 farkli etiketlerden gelmis
-      olsa bile (sirket etiket degistirmisse) turetme calisir, cunku
-      birlestirme _load_priority_entries asamasinda zaten yapildi.
+    ONEMLI: gruplama SEC'in fy/fp alanina DEGIL, fact'in kendi start/end
+    tarihine dayanir. Neden: dogrulama sirasinda gercek AAPL verisinde
+    gozlemlendi ki SEC, bir filing'in icindeki KARSILASTIRMALI (bir onceki
+    yilin ayni ceyregi) fact'e, o fact'in KENDI donemini degil, o filing'in
+    GUNCEL ceyreginin fy/fp degerini atayabiliyor (orn. FY2010 Q1 10-Q'sunda
+    yer alan FY2009 Q1 karsilastirma rakami, fy=2010,fp=Q1 olarak
+    etiketlenmis). fy/fp'ye guvenerek gruplamak, ayni (fy,fp) anahtarinin
+    altinda FARKLI gercek donemlere ait degerlerin cakismasina ve
+    birbirini rastgele ezmesine yol aciyordu. fy/fp alani hicbir zaman
+    bos/None gelmiyor (bu yuzden eskiden sessizce atlanmiyordu) - deger
+    basitce YANLIS oluyordu.
+
+    Mantik (tamamen tarih tabanli):
+    - Bir "ceyrek" suresi (70-110 gun) kaydi, ONCESINDE (bitis+1 gun =
+      baslangic) baska bir ceyrek kaydi YOKSA yeni bir mali yil dongusunun
+      Q1'i sayilir (donguyu "capa"lar).
+    - Q2/Q3: capadan sonraki gunde baslayan ayrik bir ceyrek kaydi varsa
+      dogrudan kullanilir; yoksa capayla AYNI baslangica sahip kumulatif
+      kayittan (6/9 aylik) onceki ceyreklerin toplami cikarilarak turetilir.
+    - Q4: capayla ayni baslangica sahip yillik (10-K) kayittan Q1+Q2+Q3
+      cikarilarak turetilir. Onceki ceyreklerden biri eksikse zincir orada
+      durur, Q4 (ve varsa sonraki adimlar) "veri yok" kalir.
+    - Etiket (fy): bu donguyu capalayan Q1 kaydinin (start,end) ciftini
+      ILK raporlayan filing'den alinir (_label_source_entries) - fp ise
+      zincirdeki pozisyondan (Q1/Q2/Q3/Q4) dogrudan belirlenir, SEC'in
+      fp alanina hic bakilmaz.
     """
     filed_entries = [
         e
         for e in entries
-        if e.get("form", "").startswith("10-Q") or e.get("form", "").startswith("10-K")
+        if (e.get("form", "").startswith("10-Q") or e.get("form", "").startswith("10-K"))
+        and "start" in e and "end" in e
     ]
-    filed_entries = _dedupe_entries(filed_entries)
+    if not filed_entries:
+        return {}
 
-    by_fy_fp = defaultdict(lambda: defaultdict(list))
-    for e in filed_entries:
-        fy = e.get("fy")
-        fp = e.get("fp")
-        if fy is None or fp is None or "start" not in e:
-            continue
-        by_fy_fp[fy][fp].append(e)
+    value_entries = _dedupe_entries(filed_entries)
+    label_source = _label_source_entries(filed_entries)
+
+    quarter_by_start, half_by_start, three_q_by_start, annual_by_start = {}, {}, {}, {}
+    for e in value_entries:
+        kind = _classify_duration(_days(e))
+        if kind == "quarter":
+            quarter_by_start[e["start"]] = e
+        elif kind == "half":
+            half_by_start[e["start"]] = e
+        elif kind == "three_q":
+            three_q_by_start[e["start"]] = e
+        elif kind == "annual":
+            annual_by_start[e["start"]] = e
+
+    known_quarter_ends = {e["end"] for e in quarter_by_start.values()}
+
+    def _mk(value, source_entry, derived):
+        return {
+            "value": value, "end": source_entry["end"], "filed": source_entry["filed"],
+            "form": source_entry["form"], "derived": derived, "tag": source_entry.get("_tag"),
+        }
 
     result = {}
-    for fy, by_fp in by_fy_fp.items():
-        resolved_values = {}
+    for s_fy, q1 in quarter_by_start.items():
+        if _prev_day(s_fy) in known_quarter_ends:
+            continue  # bu bir mali yil baslangici degil, onceki bir ceyregin devami
 
-        q1_entries = [e for e in by_fp.get("Q1", []) if 70 <= _days(e) <= 110]
-        if q1_entries:
-            e = max(q1_entries, key=lambda x: x["filed"])
-            resolved_values["Q1"] = e["val"]
-            result[(fy, "Q1")] = {
-                "value": e["val"], "end": e["end"], "filed": e["filed"],
-                "form": e["form"], "derived": False, "tag": e.get("_tag"),
-            }
+        chain = {"Q1": _mk(q1["val"], q1, False)}
 
-        for fp_label, prior_labels in (("Q2", ("Q1",)), ("Q3", ("Q1", "Q2"))):
-            fp_entries = by_fp.get(fp_label, [])
-            if not fp_entries:
+        q2 = quarter_by_start.get(_next_day(q1["end"]))
+        if q2 is None:
+            half_e = half_by_start.get(s_fy)
+            if half_e is None:
+                _emit_cycle(result, s_fy, chain, label_source)
                 continue
-            discrete = [e for e in fp_entries if 70 <= _days(e) <= 100]
-            cumulative = [e for e in fp_entries if _days(e) > 100]
-            if discrete:
-                e = max(discrete, key=lambda x: x["filed"])
-                resolved_values[fp_label] = e["val"]
-                result[(fy, fp_label)] = {
-                    "value": e["val"], "end": e["end"], "filed": e["filed"],
-                    "form": e["form"], "derived": False, "tag": e.get("_tag"),
-                }
-            elif cumulative and all(k in resolved_values for k in prior_labels):
-                e = max(cumulative, key=lambda x: x["filed"])
-                prior_total = sum(resolved_values[k] for k in prior_labels)
-                value = e["val"] - prior_total
-                resolved_values[fp_label] = value
-                result[(fy, fp_label)] = {
-                    "value": value, "end": e["end"], "filed": e["filed"],
-                    "form": e["form"], "derived": True, "tag": e.get("_tag"),
-                }
+            chain["Q2"] = _mk(half_e["val"] - chain["Q1"]["value"], half_e, True)
+        else:
+            chain["Q2"] = _mk(q2["val"], q2, False)
 
-        fy_entries = [
-            e for e in by_fp.get("FY", [])
-            if e.get("form", "").startswith("10-K") and _days(e) > 300
-        ]
-        if fy_entries and all(k in resolved_values for k in ("Q1", "Q2", "Q3")):
-            e = max(fy_entries, key=lambda x: x["filed"])
-            prior_total = resolved_values["Q1"] + resolved_values["Q2"] + resolved_values["Q3"]
-            value = e["val"] - prior_total
-            result[(fy, "Q4")] = {
-                "value": value, "end": e["end"], "filed": e["filed"],
-                "form": e["form"], "derived": True, "tag": e.get("_tag"),
-            }
+        q3 = quarter_by_start.get(_next_day(chain["Q2"]["end"]))
+        if q3 is None:
+            three_q_e = three_q_by_start.get(s_fy)
+            if three_q_e is None:
+                _emit_cycle(result, s_fy, chain, label_source)
+                continue
+            prior = chain["Q1"]["value"] + chain["Q2"]["value"]
+            chain["Q3"] = _mk(three_q_e["val"] - prior, three_q_e, True)
+        else:
+            chain["Q3"] = _mk(q3["val"], q3, False)
+
+        annual_e = annual_by_start.get(s_fy)
+        q4 = quarter_by_start.get(_next_day(chain["Q3"]["end"]))
+        if q4 is not None and annual_e is not None and q4["end"] == annual_e["end"]:
+            chain["Q4"] = _mk(q4["val"], q4, False)
+        elif annual_e is not None:
+            prior = chain["Q1"]["value"] + chain["Q2"]["value"] + chain["Q3"]["value"]
+            chain["Q4"] = _mk(annual_e["val"] - prior, annual_e, True)
+
+        _emit_cycle(result, s_fy, chain, label_source)
 
     return result
+
+
+def _emit_cycle(result: dict, s_fy: str, chain: dict, label_source: dict) -> None:
+    """chain'i (Q1..Q4 alt kumesi) sonuc sozluguna yazar. fy etiketi,
+    donguyu capalayan Q1'in (start,end) ciftini ILK raporlayan kayittan
+    alinir (bkz. resolve_duration_quarters docstring'i); fp ise SEC'in
+    fp alanina degil, chain'deki pozisyona (Q1/Q2/Q3/Q4) gore belirlenir."""
+    q1_end = chain["Q1"]["end"]
+    label_entry = label_source.get((s_fy, q1_end))
+    if label_entry is None:
+        return
+    fy = label_entry.get("fy")
+    if fy is None:
+        return
+    for fp_label, entry in chain.items():
+        result[(fy, fp_label)] = entry
 
 
 def resolve_instant_values(entries: list, wanted_ends: set) -> dict:
