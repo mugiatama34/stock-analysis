@@ -139,3 +139,113 @@ def compute_valuation_ratios(ttm: dict, market_cap, price, cash, total_debt) -> 
         "ev_ebitda": _safe_div(ev, ttm["ebitda"]),
         "p_fcf": _safe_div(market_cap, ttm["fcf"]),
     }
+
+
+def _sorted_quarters(quarters: dict) -> list:
+    items = [(k, v) for k, v in quarters.items() if v.get("period_end")]
+    items.sort(key=lambda kv: kv[1]["period_end"])
+    return [v for _, v in items]
+
+
+def _trailing_flow_sum(ordered_quarters: list, end_idx: int, metric: str):
+    """ordered_quarters[end_idx-3..end_idx] (4 ceyrek) icin metric'in
+    toplamini dondurur; pencere tam degilse veya herhangi bir ceyrekte
+    deger eksikse None (tahmin/kismi toplam yapilmaz)."""
+    if end_idx < 3:
+        return None
+    values = [ordered_quarters[i]["metrics"][metric]["value"] for i in range(end_idx - 3, end_idx + 1)]
+    if any(v is None for v in values):
+        return None
+    return sum(values)
+
+
+def _price_on_or_before(price_history: list, iso_date: str):
+    """price_history tarihe gore artan sirali kabul edilir (yfinance_source.
+    fetch_price_history ciktisi). Verilen tarihte veya ondan once islem
+    goren en son kapanisi dondurur; hicbiri yoksa None."""
+    best = None
+    for point in price_history:
+        if point["date"] > iso_date:
+            break
+        best = point["close"]
+    return best
+
+
+def compute_valuation_history(quarters: dict, price_history: list) -> dict:
+    """Her ceyrek sonu icin, o tarihteki fiyat ve trailing-TTM degerlerinden
+    F/K, P/S, EV/EBITDA, P/FCF oran serisi uretir (CLAUDE.md > Metrikler >
+    Degerleme: hissenin kendi 5 yillik araligindaki yuzdelik konumu icin
+    girdi). Piyasa degeri, o ceyregin kendi agirlikli ortalama seyreltilmis
+    hisse adedi (diluted_shares) ile fiyatin carpimidir - "o tarihteki fiili
+    hisse adedi" degil, ama EDGAR'dan zaten cozulmus/tahmin icermeyen tek
+    veridir. Herhangi bir girdi eksikse o ceyrek icin o metrik atlanir,
+    interpolasyon yapilmaz. Donen serilerin her biri en fazla
+    config.VALUATION_HISTORY_MAX_QUARTERS eleman tutar (en yeniden geriye)."""
+    ordered = _sorted_quarters(quarters)
+    history = {"pe": [], "ps": [], "ev_ebitda": [], "p_fcf": []}
+
+    for i, q in enumerate(ordered):
+        price = _price_on_or_before(price_history, q["period_end"])
+        if price is None:
+            continue
+
+        eps_ttm = _trailing_flow_sum(ordered, i, "eps_diluted")
+        history["pe"].append(_safe_div(price, eps_ttm))
+
+        shares = q["metrics"]["diluted_shares"]["value"]
+        market_cap = price * shares if shares is not None else None
+
+        revenue_ttm = _trailing_flow_sum(ordered, i, "revenue")
+        history["ps"].append(_safe_div(market_cap, revenue_ttm))
+
+        ocf_ttm = _trailing_flow_sum(ordered, i, "operating_cash_flow")
+        capex_ttm = _trailing_flow_sum(ordered, i, "capex")
+        fcf_ttm = (
+            ocf_ttm - abs(capex_ttm) if ocf_ttm is not None and capex_ttm is not None else None
+        )
+        history["p_fcf"].append(_safe_div(market_cap, fcf_ttm))
+
+        operating_income_ttm = _trailing_flow_sum(ordered, i, "operating_income")
+        d_and_a_ttm = _trailing_flow_sum(ordered, i, "depreciation_amortization")
+        ebitda_ttm = (
+            operating_income_ttm + d_and_a_ttm
+            if operating_income_ttm is not None and d_and_a_ttm is not None
+            else None
+        )
+        total_debt = q["metrics"]["total_debt"]["value"]
+        cash = q["metrics"]["cash_and_equivalents"]["value"]
+        ev = (
+            market_cap + total_debt - cash
+            if market_cap is not None and total_debt is not None and cash is not None
+            else None
+        )
+        history["ev_ebitda"].append(_safe_div(ev, ebitda_ttm))
+
+    for key, values in history.items():
+        history[key] = [v for v in values if v is not None][-config.VALUATION_HISTORY_MAX_QUARTERS :]
+    return history
+
+
+def compute_valuation_context(valuation_history: dict, valuation: dict) -> dict:
+    """Bugunku (canli) degerleme oraninin, kendi gecmis dagilimindaki
+    yuzdelik konumunu hesaplar. Esik (kullanicidan): >=20 ceyrek varsa
+    (compute_valuation_history zaten son 20'ye kirpar) tam pencere kullanilir,
+    12-19 arasi varsa mevcut sayiyla hesaplanip kac ceyrege dayandigi ayrica
+    dondurulur, 12'nin altinda yuzdelik HIC hesaplanmaz (sadece ham oran
+    gosterilir - bkz. render.py)."""
+    if not valuation.get("available"):
+        return {}
+
+    context = {}
+    for key in ("pe", "ps", "ev_ebitda", "p_fcf"):
+        current = valuation.get(key)
+        series = valuation_history.get(key, [])
+        n = len(series)
+        if current is None or n == 0:
+            context[key] = {"status": "no_data", "quarters_used": n}
+        elif n < config.VALUATION_HISTORY_MIN_QUARTERS:
+            context[key] = {"status": "insufficient_history", "quarters_used": n}
+        else:
+            percentile = sum(1 for v in series if v <= current) / n * 100
+            context[key] = {"status": "ok", "quarters_used": n, "percentile": percentile}
+    return context
