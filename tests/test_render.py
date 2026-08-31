@@ -181,6 +181,48 @@ def test_valuation_insufficient_history_shows_raw_ratio_and_count():
     assert "14 çeyrek mevcut" in output
 
 
+def test_negative_ttm_net_income_shows_loss_label_not_negative_pe_percentile():
+    # TTM net kar negatifse F/K "hesaplanamaz (zarar)" gostermeli, negatif
+    # bir sayi ve yuzdelik ASLA gorunmemeli (yanlislikla "tarihi ucuzluk"
+    # gibi okunuyordu - bkz. gorev tanimi sorun 1).
+    data = _base_data(
+        valuation={
+            "available": True,
+            "pe": None,
+            "ps": None,
+            "ev_ebitda": None,
+            "p_fcf": None,
+            "unavailable_reasons": {"pe": "hesaplanamaz (zarar)", "p_fcf": None},
+        },
+        valuation_context={},
+    )
+
+    output = render.render_report(data, generated_at="2026-08-31")
+
+    assert "hesaplanamaz (zarar)" in output
+    assert "-9.06" not in output
+    assert "yüzdelik" not in output
+
+
+def test_financing_arm_hides_p_fcf_and_ev_ebitda_but_not_margins():
+    data = _base_data(
+        financing_arm_flag={
+            "has_financing_arm": True,
+            "reason": "Şirketin finansman kolu faaliyetleri nakit akışını bozduğu için P/FCF ve EV/EBITDA gizlendi.",
+        },
+        valuation={"available": True, "pe": 10.0, "ps": 2.0, "ev_ebitda": 8.25, "p_fcf": 6.75},
+        valuation_context={},
+    )
+
+    output = render.render_report(data, generated_at="2026-08-31")
+
+    assert "finansman kolu faaliyetleri nakit akışını bozduğu" in output
+    assert "8.25" not in output
+    assert "6.75" not in output
+    # kendi marj/borc metrikleri (sektor kuralindan farkli) hala gorunmeli
+    assert "10.00" in output
+
+
 def test_sector_and_industry_translated_to_turkish():
     data = _base_data(sector="Technology", industry="Software - Application")
 

@@ -253,6 +253,23 @@ FINANCIAL_SECTOR_KEYWORDS = [
     "real estate investment trust",
 ]
 
+# "Finansman kolu olan sanayi sirketi" tespiti (CLAUDE.md > Metrikler >
+# SEKTOR ISTISNASI ucuncu kategori) icin sirket kunyesinde (yfinance
+# longBusinessSummary, kucuk harfe cevrilmis) aranan ifadeler - bkz.
+# metrics.classify_financing_arm docstring'i (neden oran degil metin
+# tabanli tespit secildigi icin gerekce orada).
+FINANCING_ARM_KEYWORDS = [
+    "financial services segment",
+    "financing segment",
+    "captive finance",
+    "credit and financing",
+    "financing operations",
+    "wholesale and retail financing",
+    "dealer financing",
+    "vehicle financing",
+    "equipment financing",
+]
+
 # Render katmani (CLAUDE.md > Rapor katmani > KAPSAM KURALI): bir metrik,
 # bulunan ceyreklerin bu oranindan azinda doluysa render'da gizlenir.
 RENDER_COVERAGE_THRESHOLD = 0.30

@@ -27,6 +27,37 @@ def classify_sector(sector, industry) -> dict:
     return {"is_financial_sector": False, "reason": None}
 
 
+def classify_financing_arm(business_summary) -> dict:
+    """Ford/GM/Caterpillar gibi finansman kolu (captive finance) olan sanayi
+    sirketlerini tespit eder - bunlarda kredi/finansman faaliyeti yatirim
+    nakit akisinda gorundugu icin klasik FCF ve borc oranlari yaniltici olur
+    (bkz. CLAUDE.md > Metrikler > SEKTOR ISTISNASI, ucuncu kategori).
+
+    Tespit YONTEMI olarak sirket kunyesindeki (yfinance longBusinessSummary)
+    ACIK finansman-segmenti ifadesi secildi, finansal borc/toplam varlik
+    ORANI degil. Gerekce: (1) toplam varliklar (Assets XBRL etiketi) su an
+    veri katmaninda cekilen bir metrik degil - bunu eklemek yeni bir instant
+    metrik ve yeni bir cekim kapsamı gerektirirdi; (2) oran tabanli bir tespit
+    "finansman kolu" sayilacak esigi KEYFI belirlemeyi gerektirir - bu oran
+    otomotivde, agir makinede ve perakende kredi kartinda cok farkli
+    seviyelerde normaldir, gercek veri uzerinde dogrulanmadan secilecek bir
+    esik INSTANT_METRIC_CONTINUITY_THRESHOLD gibi sezgisel kalirdi. Kunyedeki
+    segment ifadesi ise sirketin KENDI SEC dosyalarindan/yfinance ozetinden
+    gelen bir gercek - tahmin degil, ASLA tahmin etme kuraliyla tutarli."""
+    haystack = (business_summary or "").lower()
+    for keyword in config.FINANCING_ARM_KEYWORDS:
+        if keyword in haystack:
+            return {
+                "has_financing_arm": True,
+                "reason": (
+                    "Şirketin finansman kolu (kredi/finansman segmenti) "
+                    "faaliyetleri nakit akışını ve borç temelli oranları "
+                    "bozduğu için P/FCF ve EV/EBITDA gizlendi."
+                ),
+            }
+    return {"has_financing_arm": False, "reason": None}
+
+
 def compute_quarter_derived(quarter_metrics: dict) -> dict:
     """Tek bir ceyregin ham EDGAR metriklerinden marj/nakit/bilanco
     turevlerini hesaplar. Herhangi bir girdi None ise sonuc da None kalir,
@@ -130,7 +161,16 @@ def compute_ttm(quarters: dict) -> dict:
     }
 
 
+_LOSS_UNAVAILABLE_LABEL = "hesaplanamaz (zarar)"
+
+
 def compute_valuation_ratios(ttm: dict, market_cap, price, cash, total_debt) -> dict:
+    """TTM net kar <=0 ise F/K, TTM FCF <=0 ise P/FCF hesaplanmaz - negatif
+    bir F/K sayisal olarak kucuk gorunup yuzdelik baglaminda yanlislikla
+    "tarihi ucuzluk" gibi okunabiliyor, oysa tam tersi (zarar) anlamina
+    gelir. Bu durumda oran None birakilir ve "unavailable_reasons" altinda
+    render katmaninin "hesaplanamaz (zarar)" gostermesi icin bir sebep
+    isaretlenir - render "veri yok" ile bu ikisini KARISTIRMAMALI."""
     if not ttm.get("available"):
         return {"available": False, "reason": ttm.get("reason", "TTM verisi yok")}
 
@@ -138,12 +178,32 @@ def compute_valuation_ratios(ttm: dict, market_cap, price, cash, total_debt) -> 
     if market_cap is not None and total_debt is not None and cash is not None:
         ev = market_cap + total_debt - cash
 
+    net_income = ttm["net_income"]
+    pe = None
+    pe_unavailable_reason = None
+    if net_income is not None and net_income <= 0:
+        pe_unavailable_reason = _LOSS_UNAVAILABLE_LABEL
+    else:
+        pe = _safe_div(price, ttm["eps_diluted"])
+
+    fcf = ttm["fcf"]
+    p_fcf = None
+    p_fcf_unavailable_reason = None
+    if fcf is not None and fcf <= 0:
+        p_fcf_unavailable_reason = _LOSS_UNAVAILABLE_LABEL
+    else:
+        p_fcf = _safe_div(market_cap, fcf)
+
     return {
         "available": True,
-        "pe": _safe_div(price, ttm["eps_diluted"]),
+        "pe": pe,
         "ps": _safe_div(market_cap, ttm["revenue"]),
         "ev_ebitda": _safe_div(ev, ttm["ebitda"]),
-        "p_fcf": _safe_div(market_cap, ttm["fcf"]),
+        "p_fcf": p_fcf,
+        "unavailable_reasons": {
+            "pe": pe_unavailable_reason,
+            "p_fcf": p_fcf_unavailable_reason,
+        },
     }
 
 
@@ -196,7 +256,14 @@ def compute_valuation_history(quarters: dict, price_history: list) -> dict:
             continue
 
         eps_ttm = _trailing_flow_sum(ordered, i, "eps_diluted")
-        history["pe"].append(_safe_div(price, eps_ttm))
+        net_income_ttm = _trailing_flow_sum(ordered, i, "net_income")
+        if net_income_ttm is not None and net_income_ttm <= 0:
+            # Zarar ceyregi: F/K o ceyrek icin hic hesaplanmaz, yuzdelik
+            # havuzuna da girmez (bkz. compute_valuation_ratios docstring'i -
+            # ayni kural gecmis seri icin de gecerli).
+            history["pe"].append(None)
+        else:
+            history["pe"].append(_safe_div(price, eps_ttm))
 
         shares = q["metrics"]["diluted_shares"]["value"]
         market_cap = price * shares if shares is not None else None
@@ -209,7 +276,10 @@ def compute_valuation_history(quarters: dict, price_history: list) -> dict:
         fcf_ttm = (
             ocf_ttm - abs(capex_ttm) if ocf_ttm is not None and capex_ttm is not None else None
         )
-        history["p_fcf"].append(_safe_div(market_cap, fcf_ttm))
+        if fcf_ttm is not None and fcf_ttm <= 0:
+            history["p_fcf"].append(None)
+        else:
+            history["p_fcf"].append(_safe_div(market_cap, fcf_ttm))
 
         operating_income_ttm = _trailing_flow_sum(ordered, i, "operating_income")
         d_and_a_ttm = _trailing_flow_sum(ordered, i, "depreciation_amortization")

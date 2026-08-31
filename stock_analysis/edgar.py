@@ -60,7 +60,30 @@ def fetch_companyfacts(cik: str) -> dict:
 
 
 def _load_fact_entries(companyfacts: dict, tag: str) -> list:
-    concept = companyfacts.get("facts", {}).get("us-gaap", {}).get(tag)
+    """Ford teshisinde bulundu: bir filer, standart gorunumlu bir kavrami
+    (orn. DebtAndCapitalLeaseObligations) us-gaap yerine KENDI ozel
+    taksonomi namespace'inde (companyfacts['facts'] altinda 'us-gaap'
+    disinda ayri bir anahtar, orn. sirketin ticker/CIK'ine dayali bir
+    extension namespace) AYNI YEREL ISIMLE tanimlayabiliyor - genelde
+    filer'in o donemde kullandigi taksonomi surumunde kavram tam
+    ihtiyaci karsilamadigi icin. companyfacts JSON'u bu degerleri
+    ISIMLERINE gore degil NAMESPACE'E gore gruplar; sadece 'us-gaap'e
+    bakmak, deger GERCEKTEN companyfacts'te dururken 'hic etiket
+    eslesmedi' sonucunu dogurur (Ford'da DebtAndCapitalLeaseObligations'in
+    75 kaydi olmasina ragmen total_debt'in devreye girmemesinin kok
+    nedeni buydu). Once 'us-gaap' denenir (standart, en guvenilir); orada
+    yoksa AYNI yerel etiket adi diger namespace'lerde aranir - deger
+    TAHMIN edilmiyor, sadece ayni SEC'in zaten yayinladigi kaydin
+    ARANDIGI yer genisletiliyor."""
+    facts = companyfacts.get("facts", {})
+    concept = facts.get("us-gaap", {}).get(tag)
+    if not concept:
+        for namespace, concepts in facts.items():
+            if namespace == "us-gaap":
+                continue
+            if tag in concepts:
+                concept = concepts[tag]
+                break
     if not concept:
         return []
     units = concept.get("units", {})
