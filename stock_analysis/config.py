@@ -14,10 +14,14 @@ OUTPUT_DIR = "output"
 
 MAX_PEERS = 5
 
-# Her metrik icin sirali XBRL us-gaap tag adaylari. Ilk dolu olan kullanilir.
-# Bunlar "duration" (donem boyunca akan) kalemlerdir: gelir tablosu ve nakit
-# akis kalemleri. Ceyreklik turetme (bkz. edgar.resolve_duration_quarters)
-# bu kalemlere uygulanir.
+# Her metrik icin sirali XBRL us-gaap tag adaylari. Bunlar "duration" (donem
+# boyunca akan) kalemlerdir: gelir tablosu ve nakit akis kalemleri.
+# Sirketler zaman icinde etiket degistirebilir (orn. ASC 606 sonrasi gelir
+# etiketi, ya da birkac yil sureyle "ContinuingOperations" varyanti). Bu
+# yuzden ceyreklik cozumleme (edgar.build_quarters) TEK etiketle durmaz,
+# listedeki TUM etiketlerin verisini birlestirir; ayni donem icin birden
+# fazla etiket varsa listede once gelen kazanir. Sira, ayni kavramin farkli
+# etiketleri arasinda tercih sirasidir.
 DURATION_TAG_PRIORITIES = {
     "revenue": [
         "Revenues",
@@ -33,9 +37,6 @@ DURATION_TAG_PRIORITIES = {
         "CostOfGoodsSold",
         "CostOfServices",
     ],
-    "gross_profit": [
-        "GrossProfit",
-    ],
     "operating_income": [
         "OperatingIncomeLoss",
     ],
@@ -43,10 +44,6 @@ DURATION_TAG_PRIORITIES = {
         "NetIncomeLoss",
         "ProfitLoss",
         "NetIncomeLossAvailableToCommonStockholdersBasic",
-    ],
-    "eps_diluted": [
-        "EarningsPerShareDiluted",
-        "EarningsPerShareBasicAndDiluted",
     ],
     "diluted_shares": [
         "WeightedAverageNumberOfDilutedSharesOutstanding",
@@ -72,9 +69,17 @@ DURATION_TAG_PRIORITIES = {
         "InterestExpenseNonoperating",
     ],
 }
+# gross_profit ve eps_diluted BILEREK burada yok: XBRL etiketinden degil,
+# gelir-satis maliyeti / net kar-seyreltilmis hisse adedinden hesaplanir
+# (bkz. edgar.build_quarters). Boylece filer'in "brut kar" tanimindaki
+# tutarsizliga bagli kalinmaz.
 
 # "instant" (bir tarihteki anlik) kalemler: bilanco kalemleri. Ceyrek sonu
-# tarihine gore dogrudan okunur, turetme yapilmaz.
+# tarihine gore dogrudan okunur, turetme yapilmaz. Listedeki etiketler ayni
+# kavramin FARKLI TANIMLARI olabilir (orn. LongTermDebt ile
+# LongTermDebtNoncurrent ayni sey degildir) - bu yuzden duration
+# metriklerinin aksine BIRLESTIRILMEZ: sirket genelinde veri donduren ILK
+# etiket sabit olarak kullanilir, ceyrekten ceyrege farkli tanima gecilmez.
 INSTANT_TAG_PRIORITIES = {
     "cash_and_equivalents": [
         "CashAndCashEquivalentsAtCarryingValue",
@@ -88,6 +93,17 @@ INSTANT_TAG_PRIORITIES = {
     "long_term_debt": [
         "LongTermDebtNoncurrent",
         "LongTermDebt",
+    ],
+}
+
+# Bazi bilanco kalemleri ana etiketin ALTERNATIFI degil, TAMAMLAYICISIDIR:
+# sirket ikisine de ayni anda sahip olabilir (orn. kisa vadeli borclanma +
+# ticari senet). Bu yuzden fallback zincirine degil, ayrica toplanan bir
+# bilesen listesine konur. Eksikse 0 sayilir (yoklugu "veri yok" degil,
+# o bilesenin sirkette bulunmadigi anlamina gelir).
+INSTANT_ADDITIVE_TAGS = {
+    "short_term_debt": [
+        "CommercialPaper",
     ],
 }
 
