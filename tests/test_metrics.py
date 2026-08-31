@@ -22,6 +22,7 @@ _BASE_METRICS = {
     "cash_and_equivalents": _m(None),
     "short_term_debt": _m(None),
     "long_term_debt": _m(None),
+    "total_debt": _m(None),
 }
 
 
@@ -37,6 +38,25 @@ def test_gross_profit_always_computed_not_read_from_tag():
     derived = compute_quarter_derived(quarter_metrics)
 
     assert derived["gross_margin"] == 0.4
+
+
+def test_net_debt_reads_total_debt_directly_not_recomputed_from_components():
+    # total_debt artik EDGAR katmaninda (edgar._resolve_instant_chain_with_fallback)
+    # cozulen dogrudan bir metriktir; compute_quarter_derived onu
+    # short_term_debt/long_term_debt'ten YENIDEN toplamamali, quarter_metrics
+    # icindeki hazir degeri okumali. short_term_debt/long_term_debt burada
+    # BILEREK total_debt'ten FARKLI degerlere sahip - eger kod hala eski
+    # sekilde bunlari toplasaydi net_debt yanlis cikardi.
+    quarter_metrics = dict(_BASE_METRICS)
+    quarter_metrics["short_term_debt"] = _m(999)
+    quarter_metrics["long_term_debt"] = _m(999)
+    quarter_metrics["total_debt"] = _m(500)
+    quarter_metrics["cash_and_equivalents"] = _m(200)
+
+    derived = compute_quarter_derived(quarter_metrics)
+
+    assert derived["total_debt"] == 500
+    assert derived["net_debt"] == 300
 
 
 def test_gross_profit_missing_when_inputs_missing():

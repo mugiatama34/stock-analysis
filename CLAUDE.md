@@ -67,6 +67,25 @@ SEKTÖR İSTİSNASI: banka, sigorta ve GYO'larda bu oranların çoğu
 anlamsız. Sektör bunlardan biriyse ilgili metrikleri gizle ve raporda
 nedenini tek cümleyle belirt.
 
+## Rapor katmanı
+Veri katmanı (EDGAR/yfinance/Finnhub'dan çekilen ham ve türetilmiş
+metrikler) tüm metrikleri KOŞULSUZ hesaplar; çıktı JSON'u sektör veya
+kapsam gerekçesiyle eksiltilmez, her zaman eksiksiz kalır.
+
+Gizleme SADECE render (HTML rapor üretimi) aşamasında yapılır, veri
+katmanında değil. İki gizleme kuralı BAĞIMSIZ çalışır — biri diğerinin
+yerine geçmez, bir metrik ikisinden hangisiyle eşleşirse o gerekçeyle
+gizlenir:
+
+- SEKTÖR KURALI: sektör banka, sigorta veya GYO ise borç ve marj
+  temelli metrikler render'da gizlenir; nedeni raporda tek cümleyle
+  belirtilir (bkz. Metrikler > SEKTÖR İSTİSNASI).
+- KAPSAM KURALI: bir metrik, bulunan çeyreklerin %30'undan azında
+  doluysa render'da gizlenir; nedeni raporda tek cümleyle belirtilir.
+
+Bu iki kural henüz UYGULANMADI — burada sadece tanımlanıyor, render
+aşaması bunları uygulayacak şekilde ayrıca geliştirilecek.
+
 ## Tasarım
 Mobil öncelikli, dark mode varsayılan, light varyant.
 CSS değişken isimleri mugiatama34.github.io reposundaki index.html ile

@@ -442,16 +442,56 @@ def _resolve_instant_sum(companyfacts: dict, primary: str, components: list, wan
     return result
 
 
-def _resolve_instant_metric(companyfacts: dict, spec: dict, wanted_ends: set) -> dict:
+def _resolve_instant_chain_with_fallback(
+    companyfacts: dict, tags: list, wanted_ends: set, fallback_metrics: list, resolved_so_far: dict
+) -> dict:
+    """'chain_with_fallback' modundaki bir instant metrigi cozer (bkz.
+    config.INSTANT_METRICS total_debt aciklamasi): once "tags" zinciri
+    HER CEYREK icin bagimsiz denenir (bkz. _resolve_instant_chain). O
+    ceyrek icin zincirden sonuc CIKMAZSA, "fallback_metrics" listesindeki
+    metriklerin (resolved_so_far icinde ONCEDEN cozulmus olmasi gerekir -
+    bkz. build_quarters'ta INSTANT_METRICS sozluk sirasi) o ceyrek icin
+    bulunan degerleri toplanir; bulunamayan metrik 0 sayilir, HICBIRI
+    bulunamamissa o ceyrek 'veri yok' kalir. Donen: {end: {"val", "tag"}} -
+    fallback kullanilan ceyreklerde "tag", kullanilan fallback
+    metriklerinin "+" ile birlestirilmis adi olur (orn.
+    "short_term_debt+long_term_debt"), boylece verify_data_layer.py hangi
+    tabanin kullanildigini ceyrek bazinda raporlayabilir."""
+    result = dict(_resolve_instant_chain(companyfacts, tags, wanted_ends))
+    for end in wanted_ends:
+        if end in result:
+            continue
+        parts = []
+        for metric in fallback_metrics:
+            entry = resolved_so_far.get(metric, {}).get(end)
+            if entry is not None:
+                parts.append((metric, entry["val"]))
+        if not parts:
+            continue
+        result[end] = {
+            "val": sum(v for _, v in parts),
+            "tag": "+".join(name for name, _ in parts),
+        }
+    return result
+
+
+def _resolve_instant_metric(companyfacts: dict, spec: dict, wanted_ends: set, resolved_so_far: dict = None) -> dict:
     """spec (config.INSTANT_METRICS'teki bir metrik girdisi) icindeki "mode"
-    alanina gore _resolve_instant_chain / _resolve_instant_sum'a yonlendirir.
-    Donen: {end: {"val", "tag"}}."""
+    alanina gore _resolve_instant_chain / _resolve_instant_sum /
+    _resolve_instant_chain_with_fallback'a yonlendirir. resolved_so_far,
+    "chain_with_fallback" modu icin ONCEDEN cozulmus diger instant
+    metriklerin sonuclarini tasir (bkz. build_quarters). Donen:
+    {end: {"val", "tag"}}."""
     if spec["mode"] == "chain":
         return _resolve_instant_chain(
             companyfacts, spec["tags"], wanted_ends, spec.get("subtract_when_using")
         )
     if spec["mode"] == "sum":
         return _resolve_instant_sum(companyfacts, spec.get("primary"), spec["components"], wanted_ends)
+    if spec["mode"] == "chain_with_fallback":
+        return _resolve_instant_chain_with_fallback(
+            companyfacts, spec["tags"], wanted_ends, spec["fallback_metrics"], resolved_so_far or {}
+        )
     raise ValueError(f"bilinmeyen instant metrik modu: {spec['mode']!r}")
 
 
@@ -618,10 +658,14 @@ def build_quarters(companyfacts: dict, cached_quarters: dict = None, splits: lis
 
     wanted_ends = {pe for pe, _, _ in period_info.values() if pe}
 
-    instant_results = {
-        metric: _resolve_instant_metric(companyfacts, spec, wanted_ends)
-        for metric, spec in config.INSTANT_METRICS.items()
-    }
+    # Sozluk sirasina gore SIRALI cozulur (comprehension degil): total_debt
+    # gibi "chain_with_fallback" modundaki metrikler, ONCE tanimlanmis
+    # short_term_debt/long_term_debt gibi metriklerin ZATEN cozulmus
+    # sonuclarina ihtiyac duyar (bkz. _resolve_instant_chain_with_fallback,
+    # config.INSTANT_METRICS total_debt aciklamasi).
+    instant_results = {}
+    for metric, spec in config.INSTANT_METRICS.items():
+        instant_results[metric] = _resolve_instant_metric(companyfacts, spec, wanted_ends, instant_results)
 
     new_quarters = {}
     for fy, fp in new_keys:

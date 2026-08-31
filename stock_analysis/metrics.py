@@ -38,8 +38,7 @@ def compute_quarter_derived(quarter_metrics: dict) -> dict:
     d_and_a = quarter_metrics["depreciation_amortization"]["value"]
     interest_expense = quarter_metrics["interest_expense"]["value"]
     cash = quarter_metrics["cash_and_equivalents"]["value"]
-    st_debt = quarter_metrics["short_term_debt"]["value"]
-    lt_debt = quarter_metrics["long_term_debt"]["value"]
+    total_debt = quarter_metrics["total_debt"]["value"]
 
     fcf = None
     if ocf is not None and capex is not None:
@@ -47,10 +46,6 @@ def compute_quarter_derived(quarter_metrics: dict) -> dict:
         # raporlanir, ama bazi filer'lar isareti tersine kullanabiliyor;
         # abs() bu tutarsizliga karsi savunmaci.
         fcf = ocf - abs(capex)
-
-    total_debt = None
-    if st_debt is not None or lt_debt is not None:
-        total_debt = (st_debt or 0) + (lt_debt or 0)
 
     net_debt = None
     if total_debt is not None and cash is not None:
