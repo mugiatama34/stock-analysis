@@ -175,3 +175,56 @@ def test_valuation_insufficient_history_shows_raw_ratio_and_count():
 
     assert "20.00" in output
     assert "14 çeyrek mevcut" in output
+
+
+def test_sector_and_industry_translated_to_turkish():
+    data = _base_data(sector="Technology", industry="Software - Application")
+
+    output = render.render_report(data, generated_at="2026-08-31")
+
+    assert "Teknoloji" in output
+    assert "Yazılım - Uygulama" in output
+    assert "Technology" not in output
+    assert "Software - Application" not in output
+
+
+def test_unknown_sector_and_industry_fall_back_to_english():
+    data = _base_data(sector="Some New Sector", industry="Some New Industry")
+
+    output = render.render_report(data, generated_at="2026-08-31")
+
+    assert "Some New Sector" in output
+    assert "Some New Industry" in output
+
+
+def test_short_business_summary_has_no_expand_link():
+    data = _base_data(business_summary="Kısa bir açıklama.")
+
+    output = render.render_report(data, generated_at="2026-08-31")
+
+    assert "Kısa bir açıklama." in output
+    assert "Devamını göster" not in output
+
+
+def test_long_business_summary_is_truncated_at_sentence_boundary_with_expand_link():
+    first_sentence = "A" * 350 + "."
+    second_sentence = " " + "B" * 200 + "."
+    data = _base_data(business_summary=first_sentence + second_sentence)
+
+    output = render.render_report(data, generated_at="2026-08-31")
+
+    assert first_sentence in output
+    assert "Devamını göster" in output
+    assert "B" * 200 in output
+    # kirpilan kisa metin, tam metnin bir alt dizesi olarak degil, ayri
+    # bir yerde (details icinde) gorunmeli - kirpma noktasi cumle sonuydu
+    assert output.index(first_sentence) < output.index("Devamını göster")
+
+
+def test_business_summary_without_sentence_boundary_hard_truncates_with_ellipsis():
+    data = _base_data(business_summary="A" * 500)
+
+    output = render.render_report(data, generated_at="2026-08-31")
+
+    assert ("A" * 400 + "…") in output
+    assert "Devamını göster" in output

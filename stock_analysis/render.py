@@ -16,8 +16,12 @@ cumlelik gerekce yazilir.
 """
 
 import html
+import re
 
-from . import config
+from . import config, sector_labels
+
+_SUMMARY_TRUNCATE_LIMIT = 400
+_SENTENCE_END_RE = re.compile(r"[.!?](?=\s|$)")
 
 _VALUATION_LABELS = {"pe": "F/K", "ps": "P/S", "ev_ebitda": "EV/EBITDA", "p_fcf": "P/FCF"}
 
@@ -135,6 +139,25 @@ def _field(label: str, value_html: str) -> str:
     return f'<div class="field"><span class="field__label">{_esc(label)}</span><span class="field__value">{value_html}</span></div>'
 
 
+def _split_summary(text: str, limit: int = _SUMMARY_TRUNCATE_LIMIT):
+    """Metin limit'ten kisaysa oldugu gibi (rest=None) dondurulur. Uzunsa,
+    ilk limit karakter icinde en son cumle sonu (./!/? + bosluk ya da metin
+    sonu) noktasinda kesilir; boyle bir sinir yoksa (tek cumle limit'ten
+    uzun) sert kesim yapilip "…" eklenir. Kesilen kisim "rest" olarak
+    ayrica dondurulur - "devamini goster" bagi altinda gosterilmek uzere."""
+    if len(text) <= limit:
+        return text, None
+
+    window = text[:limit]
+    cut = None
+    for match in _SENTENCE_END_RE.finditer(window):
+        cut = match.end()
+
+    if cut is None:
+        return window.rstrip() + "…", text[limit:].strip()
+    return window[:cut], text[cut:].strip()
+
+
 def _render_header(data: dict) -> str:
     quarter_items = _sorted_quarter_items(data["quarters"])
     if quarter_items:
@@ -148,7 +171,7 @@ def _render_header(data: dict) -> str:
         range_text = "veri yok"
         data_date = "veri yok"
 
-    sector = data.get("sector") or "veri yok"
+    sector = sector_labels.translate_sector(data.get("sector")) or "veri yok"
     return f"""
 <header class="header">
   <h1>{_esc(data['company_name'] or data['ticker'])} <span class="ticker">{_esc(data['ticker'])}</span></h1>
@@ -162,12 +185,27 @@ def _render_header(data: dict) -> str:
 """
 
 
+def _render_summary(summary: str) -> str:
+    short, rest = _split_summary(summary)
+    if rest is None:
+        return f'<p class="summary">{_esc(short)}</p>'
+    return (
+        f'<p class="summary">{_esc(short)}</p>'
+        '<details class="summary-more">'
+        "<summary>Devamını göster</summary>"
+        f'<p class="summary">{_esc(rest)}</p>'
+        "</details>"
+    )
+
+
 def _render_profile(data: dict) -> str:
     summary = data.get("business_summary") or "veri yok"
+    sector = sector_labels.translate_sector(data.get("sector"))
+    industry = sector_labels.translate_industry(data.get("industry"))
     fields = "".join(
         [
-            _field("Sektör", _esc(data.get("sector") or "veri yok")),
-            _field("Endüstri", _esc(data.get("industry") or "veri yok")),
+            _field("Sektör", _esc(sector or "veri yok")),
+            _field("Endüstri", _esc(industry or "veri yok")),
             _field(
                 "Çalışan sayısı",
                 _fmt_int(data["employees"]) if data.get("employees") is not None else "veri yok",
@@ -181,7 +219,7 @@ def _render_profile(data: dict) -> str:
     return f"""
 <section class="section">
   <h2>Şirket künyesi</h2>
-  <p class="summary">{_esc(summary)}</p>
+  {_render_summary(summary)}
   <div class="fields">{fields}</div>
 </section>
 """
@@ -433,6 +471,17 @@ main {
 .summary {
   color: var(--text-muted);
   margin: 0 0 var(--space-3);
+}
+
+.summary-more summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 0.9rem;
+  margin: 0 0 var(--space-2);
+}
+
+.summary-more .summary {
+  margin: 0;
 }
 
 .fields {
