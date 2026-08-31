@@ -36,6 +36,40 @@ for metric, spec in config.INSTANT_METRICS.items():
 _ATTEMPTED_TAGS["eps_diluted"] = []
 
 
+def _continuity_warnings(ordered_quarters: list, metric: str, threshold: float) -> list:
+    """Bir bilanco (INSTANT_METRICS) metrigin ceyrekten ceyrege serisinde,
+    eslesen EDGAR etiketinin DEGISTIGI noktada degerin bir onceki DOLU
+    ceyrege gore GORELI SICRAMASINI kontrol eder. Esik asilirsa, bu genelde
+    ayni "chain" icindeki iki etiketin ayni kavrami ASLINDA FARKLI KAPSAMDA
+    tanimladigina isaret eder (orn. long_term_debt: LongTermDebt cari kismi
+    icerirken LongTermDebtNoncurrent haric tutar - bkz. config.py
+    subtract_when_using aciklamasi). Deger DEGISTIRILMEZ, sadece dogrulama
+    ozetine uyari eklenir. Bosluklu (veri yok) ceyrekler atlanir - kiyaslama
+    her zaman bir onceki GERCEKTEN DOLU ceyrege karsi yapilir."""
+    warnings = []
+    prev_qkey = prev_value = prev_tag = None
+    for qkey, quarter in ordered_quarters:
+        entry = quarter["metrics"].get(metric, {})
+        value = entry.get("value")
+        tag = entry.get("tag")
+        if value is None:
+            continue
+        if prev_value is not None and tag != prev_tag and prev_value != 0:
+            relative_jump = abs(value - prev_value) / abs(prev_value)
+            if relative_jump > threshold:
+                warnings.append({
+                    "quarter": qkey,
+                    "prev_quarter": prev_qkey,
+                    "prev_tag": prev_tag,
+                    "new_tag": tag,
+                    "prev_value": prev_value,
+                    "new_value": value,
+                    "relative_jump": round(relative_jump, 4),
+                })
+        prev_qkey, prev_value, prev_tag = qkey, value, tag
+    return warnings
+
+
 def summarize(data: dict) -> dict:
     """Cekilen veriden, her metrik icin kac ceyrekte deger bulundugunu, hangi
     EDGAR etiketinin eslestigini, ilk/son dolu ceyregi ve bu iki ceyrek
@@ -86,6 +120,17 @@ def summarize(data: dict) -> dict:
         attempted_tags = _ATTEMPTED_TAGS.get(metric, [])
         unmatched_tags = [tag for tag in attempted_tags if tag not in tags_used]
 
+        # Sureklilik kontrolu sadece bilanco (instant) metrikler icindir:
+        # akis (duration) metriklerde etiket degisimi zaten yillik/kumulatif
+        # capalarla capraz dogrulanir (bkz. edgar.resolve_duration_quarters),
+        # ama bilanco kalemleri dogrudan okunur - capraz dogrulama yok, bu
+        # yuzden etiket degisimindeki sicramalar sessizce gecebilir.
+        continuity_warnings = (
+            _continuity_warnings(ordered, metric, config.INSTANT_METRIC_CONTINUITY_THRESHOLD)
+            if metric in config.INSTANT_METRICS
+            else []
+        )
+
         metrics_summary[metric] = {
             "filled_quarters": filled,
             "missing_quarters": missing,
@@ -95,13 +140,21 @@ def summarize(data: dict) -> dict:
             "first_filled_quarter": first_filled_quarter,
             "last_filled_quarter": last_filled_quarter,
             "internal_gap_quarters": internal_gap_quarters,
+            "continuity_warnings": continuity_warnings,
         }
+
+    all_continuity_warnings = [
+        {"metric": metric, **warning}
+        for metric, info in metrics_summary.items()
+        for warning in info["continuity_warnings"]
+    ]
 
     ttm = data.get("ttm", {})
     valuation = data.get("valuation", {})
     return {
         "quarter_count": len(quarters),
         "metrics": metrics_summary,
+        "continuity_warnings": all_continuity_warnings,
         "ttm_eps_diluted": ttm.get("eps_diluted") if ttm.get("available") else None,
         "valuation_pe": valuation.get("pe") if valuation.get("available") else None,
     }
@@ -145,7 +198,22 @@ def print_report(ticker: str, data: dict, summary: dict) -> None:
                 f"{'':<28}  Denendi ama hicbir ceyrekte veri bulunamadi: "
                 f"{', '.join(info['unmatched_tags'])}"
             )
+        for w in info["continuity_warnings"]:
+            print(
+                f"{'':<28}  SUREKLILIK UYARISI: {w['prev_quarter']} "
+                f"({w['prev_tag']}={w['prev_value']:,.0f}) -> {w['quarter']} "
+                f"({w['new_tag']}={w['new_value']:,.0f}), etiket degisimiyle "
+                f"birlikte %{w['relative_jump'] * 100:.0f} sicrama"
+            )
     print()
+
+    if summary["continuity_warnings"]:
+        print(
+            f"UYARI: {len(summary['continuity_warnings'])} bilanco serisinde "
+            "etiket degisimiyle birlikte esik ustu sicrama tespit edildi "
+            "(yukarida metrik bazinda detaylandirildi)."
+        )
+        print()
 
     ttm = data.get("ttm", {})
     quarters = data.get("quarters", {})

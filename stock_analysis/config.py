@@ -113,6 +113,10 @@ AVERAGE_METRICS = {
 #   cozulur: o ceyrek icin veri donduren ILK etiket kullanilir. Sirket
 #   genelinde tek etikete kilitlenilmez - aksi halde bir ceyrekte gecici
 #   etiket degisimi, veri ASLINDA VARKEN o ceyregi "veri yok" birakir.
+#   Opsiyonel "subtract_when_using": {kullanilan_etiket: cikarilacak_etiket}
+#   - zincirdeki etiketler ayni kavrami FARKLI KAPSAMDA tanimliyorsa
+#   (biri bir alt-kalemi icerir, digeri haric tutar) kullanilir; bkz.
+#   long_term_debt asagida.
 #
 # - "sum" (bilesen toplami): sirketin AYNI ANDA sahip olabilecegi FARKLI
 #   kalemlerin toplamidir (orn. kisa vadeli borclanma + ticari senet).
@@ -147,8 +151,51 @@ INSTANT_METRICS = {
             "LongTermDebtNoncurrent",
             "LongTermDebt",
         ],
+        # LongTermDebt (zincirdeki YEDEK etiket) US-GAAP taksonomisinde
+        # CARI KISMI DA icerir; LongTermDebtNoncurrent ise SADECE cari
+        # olmayan kismi kapsar. short_term_debt (yukarida) LongTermDebtCurrent'i
+        # zaten bir BILESEN olarak topluyor - ayni ceyrekte hem
+        # LongTermDebtCurrent hem de (zincir LongTermDebt'e dustugu icin)
+        # LongTermDebt raporlanmissa, cari kisim total_debt'te IKI KEZ
+        # sayilir (bir short_term_debt'te, bir de long_term_debt'te). F ve
+        # GM gibi surekli cari vadeli borcu olan sirketlerde bu her donem
+        # tetiklenir (AAPL 2015'te tetiklenmedi cunku o donemde cari vadeli
+        # borcu yoktu).
+        #
+        # Cozum: FLAGLEMEK (ceyregi "veri yok" birakmak) yerine FARKI ALMAK
+        # secildi. Gerekce: LongTermDebt ve LongTermDebtCurrent ikisi de
+        # ayni ceyrek icin GERCEKTEN RAPORLANMIS iki XBRL kaydidir; aralarindaki
+        # farki almak bir TAHMIN ya da interpolasyon degildir (yasak olan
+        # "eksik veriyi doldurmak" degil) - kesin bir aritmetik islemdir ve
+        # sonuc, LongTermDebtNoncurrent'in zaten temsil ettigi kavramla TAM
+        # TUTARLIDIR. Ceyregi flaglemek (veri yok saymak) F ve GM gibi
+        # sirketler icin AYLARCA/YILLARCA suren bir bilanco boslugu
+        # yaratirdi - cari vadeli borc bu sirketlerde neredeyse her ceyrek
+        # mevcuttur, dolayisiyla flag neredeyse her ceyregi vururdu.
+        # subtract_when_using, ayni donem sonu icin LongTermDebtCurrent veri
+        # donduruyorsa bu farki otomatik uygular (bkz.
+        # edgar._resolve_instant_chain).
+        "subtract_when_using": {
+            "LongTermDebt": "LongTermDebtCurrent",
+        },
     },
 }
+
+# Bilanco (INSTANT_METRICS) serilerinde ETIKET DEGISTIGI ceyrekte, degerin
+# bir onceki DOLU ceyrege gore GORELI SICRAMASI bu esigi asarsa dogrulama
+# ozetine uyari eklenir (bkz. scripts/verify_data_layer.py
+# _continuity_warnings). Amac: "chain" zincirindeki iki etiketin ayni
+# kavrami FARKLI KAPSAMDA tanimladigi durumlari otomatik yakalamak - orn.
+# long_term_debt'te LongTermDebt cari kismi icerirken LongTermDebtNoncurrent
+# haric tutar (bkz. yukarida subtract_when_using). Bu tur bir tanim
+# karisikligi ilk kez F/GM gibi surekli cari vadeli borcu olan sirketlerde
+# ELLE dogrulama sirasinda bulundu; bu kontrol olsaydi otomatik yakalanirdi.
+# %35 esigi, normal ceyrekten ceyrege dalgalanmanin (yeniden finansman,
+# mevsimsel nakit ihtiyaci) USTUNDE ama kucuk/onemsiz bir tanim farkinin
+# (cari kismin toplam borcun kucuk bir yuzdesi oldugu sirketler) ALTINDA
+# kalacak sekilde secilmis bir sezgiseldir; yanlis pozitif/negatif dengesi
+# gercek veri uzerinde gozlemlenerek ayarlanabilir.
+INSTANT_METRIC_CONTINUITY_THRESHOLD = 0.35
 
 # Sektor istisnasi tespiti icin yfinance sector/industry metninde aranan
 # anahtar kelimeler (kucuk harfe cevrilmis metin uzerinde).
