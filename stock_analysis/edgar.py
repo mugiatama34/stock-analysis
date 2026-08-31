@@ -412,13 +412,65 @@ def _resolve_eps_diluted(duration_results: dict) -> dict:
     return eps
 
 
+def _cumulative_split_factor(after_date: str, splits: list) -> float:
+    """Verilen tarihten SONRA gerceklesen tum bolunmelerin kumulatif
+    carpanini dondurur (splits: [{"date", "ratio"}, ...], yfinance_source.
+    fetch_splits formatinda)."""
+    factor = 1.0
+    for s in splits:
+        if s["date"] > after_date:
+            factor *= s["ratio"]
+    return factor
+
+
+def _normalize_diluted_shares_for_splits(duration_results: dict, splits: list) -> None:
+    """diluted_shares (agirlikli ortalama hisse adedi) icin bolunme tabani
+    tutarsizligini duzeltir.
+
+    SEC companyfacts, ayni (start, end) donemi birden fazla filing'de
+    farkli bolunme tabaninda raporlayabiliyor: GAAP, bir bolunme sonrasi
+    TUM gecmis donemlerin hisse basina rakamlarinin geriye donuk olarak
+    yeniden ifade edilmesini (restate) zorunlu kilar - ama bu yeniden
+    ifade SADECE bolunmeden SONRA filed olan raporlarda (orn. bir 10-K'nin
+    3 yillik karsilastirma tablosu) gorulur; bolunmeden ONCE filed olmus
+    orijinal 10-Q hala eski (duzeltilmemis) tabanda kalir ve bir daha asla
+    yeniden dosyalanmaz. _dedupe_entries ayni donem icin en son filed
+    kaydi sectiginden, ayni fiskal yilin yillik (_annual) kaydi genellikle
+    SONRAKI bir bolunme sonrasi yeniden ifade edilmis (kucuk tabanli),
+    Q1-Q3 kayitlari ise hala orijinal 10-Q'dan (buyuk tabanli) gelebiliyor.
+    Bu karisik taban, Q4 EPS = yillik EPS - (Q1+Q2+Q3 EPS) turetmesini
+    (bkz. _resolve_eps_diluted) anlamsiz (buyuk negatif) degerlere
+    goturuyordu.
+
+    Duzeltme: her kaydin KENDI 'filed' tarihinden SONRA gerceklesen
+    bolunmelerin kumulatif carpani ile deger carpilir. Filed tarihinden
+    ONCEKI bolunmeler zaten o kayda yansimis sayilir (GAAP zorunlulugu);
+    SONRAKI bolunmeler ise henuz yansimamis sayilip burada uygulanir.
+    Sonuc: tum diluted_shares degerleri BUGUNKU (splits listesindeki en
+    guncel durum) hisse tabanina normalize edilmis olur. eps_diluted bu
+    normalize edilmis diluted_shares'ten hesaplandigi icin (bkz.
+    _resolve_eps_diluted) otomatik duzelir; net_income ve revenue
+    bolunmeden etkilenmedigi icin burada DEGISTIRILMEZ."""
+    if not splits:
+        return
+    shares = duration_results.get("diluted_shares")
+    if not shares:
+        return
+    for entry in shares.values():
+        if entry.get("value") is None or entry.get("filed") is None:
+            continue
+        factor = _cumulative_split_factor(entry["filed"], splits)
+        if factor != 1.0:
+            entry["value"] = entry["value"] * factor
+
+
 assert set(config.DURATION_TAG_PRIORITIES) == config.FLOW_METRICS | config.AVERAGE_METRICS, (
     "DURATION_TAG_PRIORITIES'teki her metrik config.FLOW_METRICS veya "
     "config.AVERAGE_METRICS icinde tam olarak bir kez siniflandirilmis olmali."
 )
 
 
-def build_quarters(companyfacts: dict, cached_quarters: dict = None) -> dict:
+def build_quarters(companyfacts: dict, cached_quarters: dict = None, splits: list = None) -> dict:
     """companyfacts JSON'undan, cache'te henuz OLMAYAN ceyrekleri isler ve
     dondurur. cache.py bu sonucu mevcut cache ile birlestirir.
 
@@ -426,6 +478,12 @@ def build_quarters(companyfacts: dict, cached_quarters: dict = None) -> dict:
     calistirmada tum gecmis tek istekte gelir. "Sadece eksik ceyrekler
     cekilir" burada, zaten cache'te olan ceyreklerin yeniden ISLENMEMESI
     (parse + Q4 turetmesinden gecirilmemesi) olarak uygulanir.
+
+    splits: yfinance_source.fetch_splits(ticker) formatinda bolunme
+    gecmisi. Verilirse diluted_shares (ve dolayisiyla eps_diluted)
+    bugunku hisse tabanina normalize edilir (bkz.
+    _normalize_diluted_shares_for_splits). net_income ve revenue bolunmeden
+    etkilenmedigi icin degistirilmez.
     """
     cached_quarters = cached_quarters or {}
 
@@ -439,6 +497,8 @@ def build_quarters(companyfacts: dict, cached_quarters: dict = None) -> dict:
         )
         if resolved:
             duration_results[metric] = resolved
+
+    _normalize_diluted_shares_for_splits(duration_results, splits or [])
 
     eps_by_key = _resolve_eps_diluted(duration_results)
 

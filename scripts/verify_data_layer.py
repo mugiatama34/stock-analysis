@@ -16,6 +16,20 @@ _QUARTER_METRICS = list(config.DURATION_TAG_PRIORITIES) + list(config.INSTANT_TA
     "eps_diluted",
 ]
 
+# Metrik -> koddaki cozumleme sirasinda gercekten DENENEN aday XBRL etiket
+# listesi (config'teki fallback zinciri + varsa toplanan ek bilesenler).
+# tags_used (asagida) sadece deger URETEN etiketleri gosterir; bu ise "hic
+# denenmedi" ile "denendi ama hicbir ceyrekte veri bulunamadi" arasindaki
+# farki ayirt etmek icin gerekli - fallback'in config'e eklenip
+# eklenmedigini, eklendiyse ise veri getirip getirmedigini goruruz.
+_ATTEMPTED_TAGS = {metric: list(tags) for metric, tags in config.DURATION_TAG_PRIORITIES.items()}
+for metric, tags in config.INSTANT_TAG_PRIORITIES.items():
+    _ATTEMPTED_TAGS[metric] = list(tags) + list(config.INSTANT_ADDITIVE_TAGS.get(metric, []))
+# eps_diluted herhangi bir XBRL etiketinden degil, net kar / seyreltilmis
+# hisse adedinden HESAPLANIR (bkz. edgar._resolve_eps_diluted) - denenen
+# etiket listesi kavramsal olarak yok.
+_ATTEMPTED_TAGS["eps_diluted"] = []
+
 
 def summarize(data: dict) -> dict:
     """Cekilen veriden, her metrik icin kac ceyrekte deger bulundugunu, hangi
@@ -58,10 +72,15 @@ def summarize(data: dict) -> dict:
             last_filled_quarter = None
             internal_gap_quarters = 0
 
+        attempted_tags = _ATTEMPTED_TAGS.get(metric, [])
+        unmatched_tags = [tag for tag in attempted_tags if tag not in tags_used]
+
         metrics_summary[metric] = {
             "filled_quarters": filled,
             "missing_quarters": missing,
             "tags_used": dict(tags_used),
+            "attempted_tags": attempted_tags,
+            "unmatched_tags": unmatched_tags,
             "first_filled_quarter": first_filled_quarter,
             "last_filled_quarter": last_filled_quarter,
             "internal_gap_quarters": internal_gap_quarters,
@@ -108,6 +127,13 @@ def print_report(ticker: str, data: dict, summary: dict) -> None:
             f"{first_q:>12}{last_q:>12}{info['internal_gap_quarters']:>15}"
             f"   {tags_str}{gap_marker}"
         )
+        if info["attempted_tags"]:
+            print(f"{'':<28}  Denenen etiketler: {', '.join(info['attempted_tags'])}")
+        if info["unmatched_tags"]:
+            print(
+                f"{'':<28}  Denendi ama hicbir ceyrekte veri bulunamadi: "
+                f"{', '.join(info['unmatched_tags'])}"
+            )
     print()
 
     ttm = data.get("ttm", {})

@@ -297,6 +297,57 @@ def test_build_quarters_drops_quarters_before_min_fiscal_year():
     assert "2010-Q1" in quarters
 
 
+def test_build_quarters_normalizes_diluted_shares_and_eps_for_later_split():
+    # Gercek AAPL deseninde gozlemlenen hata: Q1-Q3, bolunmeden ONCE filed
+    # olmus orijinal 10-Q'lardan gelir (kucuk/eski hisse tabani); yillik
+    # (_annual) kayit ise bolunmeden SONRA filed olmus bir 10-K'nin
+    # karsilastirma tablosundan gelir ve GAAP geregi bolunme-duzeltilmis
+    # (buyuk/yeni hisse tabani) raporlanir. Normalize edilmeden Q4 eps =
+    # yillik eps - (Q1+Q2+Q3 eps) taban karisikligi yuzunden anlamsiz buyuk
+    # negatif bir deger uretiyordu. splits verildiginde tum diluted_shares
+    # bugunku (bolunme sonrasi) tabana getirilmeli.
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "NetIncomeLoss": {"units": {"USD": [
+                    _entry("2012-01-01", "2012-03-31", 1000, 2012, "Q1", "10-Q", "2012-05-01"),
+                    _entry("2012-04-01", "2012-06-30", 1000, 2012, "Q2", "10-Q", "2012-08-01"),
+                    _entry("2012-07-01", "2012-09-30", 1000, 2012, "Q3", "10-Q", "2012-11-01"),
+                    _entry("2012-01-01", "2012-12-31", 4000, 2012, "FY", "10-K", "2013-02-01"),
+                ]}},
+                "WeightedAverageNumberOfDilutedSharesOutstanding": {"units": {"shares": [
+                    # Q1-Q3: bolunmeden (2014-06-01, 7:1) ONCE filed - eski (kucuk) taban.
+                    _entry("2012-01-01", "2012-03-31", 100, 2012, "Q1", "10-Q", "2012-05-01"),
+                    _entry("2012-04-01", "2012-06-30", 100, 2012, "Q2", "10-Q", "2012-08-01"),
+                    _entry("2012-07-01", "2012-09-30", 100, 2012, "Q3", "10-Q", "2012-11-01"),
+                    # Yillik: bolunmeden SONRA filed - GAAP geregi zaten
+                    # bolunme-duzeltilmis (700 = 100*7) raporlanmis.
+                    _entry("2012-01-01", "2012-12-31", 700, 2012, "FY", "10-K", "2014-11-01"),
+                ]}},
+            }
+        }
+    }
+    splits = [{"date": "2014-06-01", "ratio": 7.0}]
+
+    normalized = edgar.build_quarters(companyfacts, splits=splits)
+    without_normalization = edgar.build_quarters(companyfacts)
+
+    # Q1-Q3 filed tarihinden sonra bolunme oldugu icin 7x buyutulmeli.
+    assert normalized["2012-Q1"]["metrics"]["diluted_shares"]["value"] == 700
+    assert normalized["2012-Q1"]["metrics"]["eps_diluted"]["value"] == 1000 / 700
+
+    # Yillik kayit filed tarihinden sonra bolunme olmadigi icin degismemeli.
+    q4 = normalized["2012-Q4"]
+    q1_eps = normalized["2012-Q1"]["metrics"]["eps_diluted"]["value"]
+    annual_eps = 4000 / 700
+    assert q4["metrics"]["eps_diluted"]["value"] == annual_eps - 3 * q1_eps
+    assert q4["metrics"]["eps_diluted"]["value"] > 0
+
+    # Normalize edilmeden (eski davranis) taban karisikligi yuzunden Q4
+    # eps buyuk negatif cikiyordu - regresyonu somutlastirmak icin.
+    assert without_normalization["2012-Q4"]["metrics"]["eps_diluted"]["value"] < -10
+
+
 def test_build_quarters_computes_eps_and_sums_commercial_paper():
     companyfacts = {
         "facts": {

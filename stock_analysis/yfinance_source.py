@@ -26,6 +26,25 @@ def fetch_company_info(ticker: str) -> dict:
     return result
 
 
+def fetch_splits(ticker: str) -> list:
+    """yfinance'ten hisse bolunme (split) gecmisini ceker. Her oge bir
+    bolunme olayi: {"date": "YYYY-MM-DD", "ratio": float} (orn. 4.0 = 4:1
+    bolunme, 0.5 = 1:2 ters bolunme). Hata durumunda bos liste doner,
+    pipeline'i cokertmez - bu durumda hisse basina degerler normalize
+    edilmeden (as-filed) birakilir."""
+    try:
+        splits = yf.Ticker(ticker).splits
+    except Exception:
+        return []
+    if splits is None or splits.empty:
+        return []
+    return [
+        {"date": idx.strftime("%Y-%m-%d"), "ratio": float(ratio)}
+        for idx, ratio in splits.items()
+        if ratio
+    ]
+
+
 def fetch_price_history(ticker: str, period: str = "5y") -> list:
     try:
         hist = yf.Ticker(ticker).history(period=period)
