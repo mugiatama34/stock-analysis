@@ -1,0 +1,47 @@
+name: "[GECICI] Veri katmani dogrulama"
+
+on:
+  workflow_dispatch:
+    inputs:
+      ticker:
+        description: "Ticker (orn. AAPL)"
+        required: true
+        type: string
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repoyu al
+        uses: actions/checkout@v4
+
+      - name: Python kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Bagimliliklari kur
+        run: pip install -r requirements.txt
+
+      - name: Ticker'i normallestir
+        id: ticker
+        run: echo "upper=${TICKER^^}" >> "$GITHUB_OUTPUT"
+        env:
+          TICKER: ${{ inputs.ticker }}
+
+      - name: Veri katmanini calistir ve ozet bas
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+        run: python scripts/verify_data_layer.py "${{ inputs.ticker }}"
+
+      - name: Sonuclari artifact olarak yukle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veri-katmani-${{ steps.ticker.outputs.upper }}
+          path: |
+            output/${{ steps.ticker.outputs.upper }}.json
+            output/${{ steps.ticker.outputs.upper }}_verify_summary.json
+            cache/${{ steps.ticker.outputs.upper }}.json
+          if-no-files-found: warn
