@@ -377,3 +377,38 @@ def test_build_quarters_computes_eps_and_sums_commercial_paper():
     assert q["metrics"]["eps_diluted"]["derived"] is True
     assert "gross_profit" not in q["metrics"]
     assert q["metrics"]["short_term_debt"]["value"] == 80
+
+
+def test_additive_component_used_when_primary_tag_missing_for_period():
+    # Gercek AAPL verisinde gozlemlendi: 2014-Q4/2015-Q1/Q2 gibi bazi
+    # ceyreklerde short_term_debt'in ana etiketi (orn. LongTermDebtCurrent)
+    # o donem icin hic veri dondurmuyor, ama tamamlayici CommercialPaper
+    # doluyor. Tamamlayici bilesen ana etikete BAGIMLI olmamali - ana
+    # etiket o ceyrekte yoksa 0 sayilip sadece tamamlayicinin degeri
+    # kullanilmali (bkz. config.INSTANT_ADDITIVE_TAGS aciklamasi).
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "Revenues": {"units": {"USD": [
+                    _entry("2023-01-01", "2023-03-31", 1000, 2023, "Q1", "10-Q", "2023-05-01"),
+                ]}},
+                "NetIncomeLoss": {"units": {"USD": [
+                    _entry("2023-01-01", "2023-03-31", 200, 2023, "Q1", "10-Q", "2023-05-01"),
+                ]}},
+                "WeightedAverageNumberOfDilutedSharesOutstanding": {"units": {"shares": [
+                    _entry("2023-01-01", "2023-03-31", 100, 2023, "Q1", "10-Q", "2023-05-01"),
+                ]}},
+                # ShortTermBorrowings/DebtCurrent/LongTermDebtCurrent hicbiri
+                # bu ceyrek icin veri dondurmuyor (sirket bu donem icin ana
+                # etiketlerin hicbirini raporlamamis).
+                "CommercialPaper": {"units": {"USD": [
+                    _instant("2023-03-31", 30, "10-Q", "2023-05-01"),
+                ]}},
+            }
+        }
+    }
+    quarters = edgar.build_quarters(companyfacts)
+    q = quarters["2023-Q1"]
+
+    assert q["metrics"]["short_term_debt"]["value"] == 30
+    assert q["metrics"]["short_term_debt"]["tag"] == "CommercialPaper"
