@@ -254,12 +254,63 @@ def test_classify_financing_arm_detects_keyword_in_summary():
     )
     assert result["has_financing_arm"] is True
     assert result["reason"]
+    assert result["signal"] == "business_summary"
+    assert result["matched"] == "financial services segment"
 
 
 def test_classify_financing_arm_false_when_no_keyword():
     result = classify_financing_arm("A software company that builds cloud tools.")
-    assert result == {"has_financing_arm": False, "reason": None}
+    assert result == {"has_financing_arm": False, "reason": None, "signal": None, "matched": None}
 
 
 def test_classify_financing_arm_handles_none_summary():
-    assert classify_financing_arm(None) == {"has_financing_arm": False, "reason": None}
+    assert classify_financing_arm(None) == {
+        "has_financing_arm": False,
+        "reason": None,
+        "signal": None,
+        "matched": None,
+    }
+
+
+def test_classify_financing_arm_second_signal_from_xbrl_tag_when_text_silent():
+    # Kunye metni finansman kolundan hic bahsetmiyor (yfinance ozeti
+    # degisebilir/eksik olabilir) ama companyfacts'te FinanceReceivables
+    # etiketi var - yapisal sinyal metin sinyali olmadan da yeterli olmali.
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "FinanceReceivablesNetNoncurrent": {
+                    "units": {"USD": [{"end": "2023-03-31", "val": 1000, "form": "10-Q", "filed": "2023-05-01"}]}
+                }
+            }
+        }
+    }
+    result = classify_financing_arm("A generic industrial manufacturer.", companyfacts)
+
+    assert result["has_financing_arm"] is True
+    assert result["signal"] == "xbrl_tag"
+    assert result["matched"] == "FinanceReceivablesNetNoncurrent"
+
+
+def test_classify_financing_arm_text_signal_wins_over_xbrl_when_both_present():
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "NotesReceivableNet": {
+                    "units": {"USD": [{"end": "2023-03-31", "val": 1000, "form": "10-Q", "filed": "2023-05-01"}]}
+                }
+            }
+        }
+    }
+    result = classify_financing_arm(
+        "The company operates a financing segment for dealers.", companyfacts
+    )
+
+    assert result["signal"] == "business_summary"
+
+
+def test_classify_financing_arm_false_when_neither_signal_present():
+    companyfacts = {"facts": {"us-gaap": {}}}
+    result = classify_financing_arm("A generic industrial manufacturer.", companyfacts)
+
+    assert result["has_financing_arm"] is False

@@ -1,4 +1,4 @@
-from . import config
+from . import config, edgar
 
 
 def _safe_div(a, b):
@@ -27,35 +27,64 @@ def classify_sector(sector, industry) -> dict:
     return {"is_financial_sector": False, "reason": None}
 
 
-def classify_financing_arm(business_summary) -> dict:
+_FINANCING_ARM_REASON = (
+    "Şirketin finansman kolu (kredi/finansman segmenti) faaliyetleri nakit "
+    "akışını ve borç temelli oranları bozduğu için P/FCF ve EV/EBITDA gizlendi."
+)
+
+
+def classify_financing_arm(business_summary, companyfacts: dict = None) -> dict:
     """Ford/GM/Caterpillar gibi finansman kolu (captive finance) olan sanayi
     sirketlerini tespit eder - bunlarda kredi/finansman faaliyeti yatirim
     nakit akisinda gorundugu icin klasik FCF ve borc oranlari yaniltici olur
     (bkz. CLAUDE.md > Metrikler > SEKTOR ISTISNASI, ucuncu kategori).
 
-    Tespit YONTEMI olarak sirket kunyesindeki (yfinance longBusinessSummary)
-    ACIK finansman-segmenti ifadesi secildi, finansal borc/toplam varlik
-    ORANI degil. Gerekce: (1) toplam varliklar (Assets XBRL etiketi) su an
-    veri katmaninda cekilen bir metrik degil - bunu eklemek yeni bir instant
-    metrik ve yeni bir cekim kapsamı gerektirirdi; (2) oran tabanli bir tespit
+    IKI BAGIMSIZ sinyalden HERHANGI BIRI yeterlidir:
+    1. Metin sinyali: sirket kunyesindeki (yfinance longBusinessSummary)
+       ACIK finansman-segmenti ifadesi. Bu, sirketin KENDI SEC dosyalarindan/
+       yfinance ozetinden gelen bir gercek - tahmin degil. Ama yfinance'in
+       serbest Ingilizce ozet metnine bagimli oldugu icin KIRILGAN: ozet
+       degisirse veya bu ifadelerden hicbirini kullanmazsa sinyal sessizce
+       calismayi birakir.
+    2. Yapisal (XBRL) sinyal: companyfacts'te FinanceReceivables/
+       NotesReceivableNet gibi bir etiketin (herhangi bir kaydi) bulunmasi -
+       bir finansman/kredi kolu tipik olarak musteri/bayi alacaklarini bu
+       kalemlerden biriyle raporlar. Bu, metin sinyalinin aksine YAPISAL
+       veridir, ozet metninden bagimsiz calisir.
+
+    Oran tabanli bir tespit (finansal borc/toplam varlik esigi) BILEREK
+    kullanilmadi: (1) toplam varliklar (Assets XBRL etiketi) su an veri
+    katmaninda cekilen bir metrik degil - bunu eklemek yeni bir instant
+    metrik ve yeni bir cekim kapsami gerektirirdi; (2) esik-tabanli bir oran
     "finansman kolu" sayilacak esigi KEYFI belirlemeyi gerektirir - bu oran
     otomotivde, agir makinede ve perakende kredi kartinda cok farkli
     seviyelerde normaldir, gercek veri uzerinde dogrulanmadan secilecek bir
-    esik INSTANT_METRIC_CONTINUITY_THRESHOLD gibi sezgisel kalirdi. Kunyedeki
-    segment ifadesi ise sirketin KENDI SEC dosyalarindan/yfinance ozetinden
-    gelen bir gercek - tahmin degil, ASLA tahmin etme kuraliyla tutarli."""
+    esik INSTANT_METRIC_CONTINUITY_THRESHOLD gibi sezgisel kalirdi.
+
+    Donen sozlukteki "signal"/"matched" alanlari hangi sinyalin ve hangi
+    ifade/etiketin eslestigini tasir - dogrulama ozetinde (verify_data_layer.py)
+    goruntulenip tespitin neye dayandigi denetlenebilsin diye."""
     haystack = (business_summary or "").lower()
     for keyword in config.FINANCING_ARM_KEYWORDS:
         if keyword in haystack:
             return {
                 "has_financing_arm": True,
-                "reason": (
-                    "Şirketin finansman kolu (kredi/finansman segmenti) "
-                    "faaliyetleri nakit akışını ve borç temelli oranları "
-                    "bozduğu için P/FCF ve EV/EBITDA gizlendi."
-                ),
+                "reason": _FINANCING_ARM_REASON,
+                "signal": "business_summary",
+                "matched": keyword,
             }
-    return {"has_financing_arm": False, "reason": None}
+
+    if companyfacts:
+        for tag in config.FINANCING_ARM_XBRL_TAGS:
+            if edgar.has_fact(companyfacts, tag):
+                return {
+                    "has_financing_arm": True,
+                    "reason": _FINANCING_ARM_REASON,
+                    "signal": "xbrl_tag",
+                    "matched": tag,
+                }
+
+    return {"has_financing_arm": False, "reason": None, "signal": None, "matched": None}
 
 
 def compute_quarter_derived(quarter_metrics: dict) -> dict:

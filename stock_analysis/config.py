@@ -270,6 +270,20 @@ FINANCING_ARM_KEYWORDS = [
     "equipment financing",
 ]
 
+# Ikinci (yapisal) finansman kolu sinyali: kunye metni yfinance'in serbest
+# Ingilizce ozetine bagimli oldugu icin kirilgan (ozet degisirse veya
+# ifadeyi kullanmazsa sessizce calismayi birakir). Bu XBRL etiketleri
+# sirketin KENDI SEC dosyalamasindan gelen yapisal bir veridir - bir
+# finansman/kredi kolu tipik olarak musteri/bayi alacaklarini bu
+# kalemlerden biriyle raporlar. Ikisinden (metin veya etiket) HERHANGI
+# BIRI yeterlidir (bkz. metrics.classify_financing_arm).
+FINANCING_ARM_XBRL_TAGS = [
+    "FinanceReceivablesNetNoncurrent",
+    "FinanceReceivablesNetCurrent",
+    "FinanceReceivablesNet",
+    "NotesReceivableNet",
+]
+
 # Render katmani (CLAUDE.md > Rapor katmani > KAPSAM KURALI): bir metrik,
 # bulunan ceyreklerin bu oranindan azinda doluysa render'da gizlenir.
 RENDER_COVERAGE_THRESHOLD = 0.30

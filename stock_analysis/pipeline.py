@@ -36,7 +36,9 @@ def fetch_stock_data(ticker: str) -> dict:
     company_info = yfinance_source.fetch_company_info(ticker)
     price_history = yfinance_source.fetch_price_history(ticker)
     sector_flag = metrics.classify_sector(company_info.get("sector"), company_info.get("industry"))
-    financing_arm_flag = metrics.classify_financing_arm(company_info.get("business_summary"))
+    financing_arm_flag = metrics.classify_financing_arm(
+        company_info.get("business_summary"), companyfacts
+    )
 
     ttm = metrics.compute_ttm(all_quarters)
     last_quarter = metrics.latest_quarter(all_quarters)

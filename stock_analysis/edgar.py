@@ -77,22 +77,52 @@ def _load_fact_entries(companyfacts: dict, tag: str) -> list:
     ARANDIGI yer genisletiliyor."""
     facts = companyfacts.get("facts", {})
     concept = facts.get("us-gaap", {}).get(tag)
+    namespace = "us-gaap"
     if not concept:
-        for namespace, concepts in facts.items():
-            if namespace == "us-gaap":
+        for ns, concepts in facts.items():
+            if ns == "us-gaap":
                 continue
             if tag in concepts:
                 concept = concepts[tag]
+                namespace = ns
                 break
     if not concept:
         return []
     units = concept.get("units", {})
+    # "_namespace" her kayda damgalanir - hangi taksonomiden geldigi
+    # (verify_data_layer.py'nin "tag" alaninda "namespace:Etiket" olarak
+    # gosterebilmesi icin, bkz. _qualify_tag) build_quarters'a kadar tasinir.
     for unit_key in ("USD", "USD/shares", "shares", "pure"):
         if unit_key in units:
-            return units[unit_key]
+            return [dict(e, _namespace=namespace) for e in units[unit_key]]
     for entries in units.values():
-        return entries
+        return [dict(e, _namespace=namespace) for e in entries]
     return []
+
+
+def has_fact(companyfacts: dict, tag: str) -> bool:
+    """Bir XBRL etiketinin (herhangi bir namespace'te, bkz. _load_fact_entries)
+    companyfacts'te en az bir kaydi olup olmadigini dondurur. Deger okumaz,
+    sadece VARLIGINI kontrol eder - metrics.classify_financing_arm'in ikinci
+    (yapisal) sinyali icin kullanilir: FinanceReceivables/NotesReceivableNet
+    gibi bir etiketin var olmasi, sirketin bir finansman/kredi kolu
+    isletmesine isaret eder."""
+    return bool(_load_fact_entries(companyfacts, tag))
+
+
+def _qualify_tag(tag_name, namespace):
+    """Etiket adini, us-gaap DISINDA bir namespace'ten geldiyse
+    'namespace:EtiketAdi' olarak isaretler - us-gaap zaten varsayilan/beklenen
+    namespace oldugu icin duz etiket adi degismeden kalir (mevcut testler ve
+    verify_data_layer.py ciktisi geriye donuk uyumlu kalir). Bu, Ford
+    teshisinde bulunan (bkz. _load_fact_entries docstring'i) bir etiketin
+    HANGI taksonomiden coz uldugunu dogrulama ozetinde gorunur kilar."""
+    if tag_name and namespace and namespace != "us-gaap":
+        return f"{namespace}:{tag_name}"
+    return tag_name
+
+
+
 
 
 def _dedupe_entries(entries: list) -> list:
@@ -427,7 +457,10 @@ def _resolve_instant_chain(
                 e["val"] = e["val"] - subtract_entry["val"]
                 by_end[end] = e
 
-    return {end: {"val": e["val"], "tag": e.get("_tag")} for end, e in by_end.items()}
+    return {
+        end: {"val": e["val"], "tag": _qualify_tag(e.get("_tag"), e.get("_namespace"))}
+        for end, e in by_end.items()
+    }
 
 
 def _resolve_instant_sum(companyfacts: dict, primary: str, components: list, wanted_ends: set) -> dict:
@@ -450,17 +483,18 @@ def _resolve_instant_sum(companyfacts: dict, primary: str, components: list, wan
             continue
         resolved = resolve_instant_values(raw, wanted_ends)
         for end, entry in resolved.items():
-            component_resolved.setdefault(end, []).append((tag, entry["val"]))
+            component_resolved.setdefault(end, []).append((tag, entry.get("_namespace"), entry["val"]))
 
     result = {}
     for end in wanted_ends:
         if end in primary_resolved:
-            result[end] = {"val": primary_resolved[end]["val"], "tag": primary}
+            entry = primary_resolved[end]
+            result[end] = {"val": entry["val"], "tag": _qualify_tag(primary, entry.get("_namespace"))}
         elif end in component_resolved:
             parts = component_resolved[end]
             result[end] = {
-                "val": sum(v for _, v in parts),
-                "tag": "+".join(t for t, _ in parts),
+                "val": sum(v for _, _, v in parts),
+                "tag": "+".join(_qualify_tag(t, ns) for t, ns, v in parts),
             }
     return result
 

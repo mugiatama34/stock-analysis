@@ -159,6 +159,24 @@ def summarize(data: dict) -> dict:
         for warning in info["continuity_warnings"]
     ]
 
+    # net_debt turetilmis bir metriktir (quarter["metrics"] icinde degil,
+    # quarter["derived_metrics"] icinde) - _QUARTER_METRICS listesinde yok,
+    # bu yuzden yukaridaki dongude izlenmiyor; Ford teshisi (total_debt'in
+    # devreye girip girmedigi) icin ayrica kapsam/son deger raporlanir.
+    net_debt_filled = net_debt_missing = 0
+    net_debt_first = net_debt_last = None
+    for qkey, quarter in ordered:
+        value = quarter.get("derived_metrics", {}).get("net_debt")
+        if value is not None:
+            net_debt_filled += 1
+            if net_debt_first is None:
+                net_debt_first = qkey
+            net_debt_last = qkey
+        else:
+            net_debt_missing += 1
+
+    latest_qkey, latest_quarter = ordered[-1] if ordered else (None, None)
+
     ttm = data.get("ttm", {})
     valuation = data.get("valuation", {})
     return {
@@ -167,6 +185,16 @@ def summarize(data: dict) -> dict:
         "continuity_warnings": all_continuity_warnings,
         "ttm_eps_diluted": ttm.get("eps_diluted") if ttm.get("available") else None,
         "valuation_pe": valuation.get("pe") if valuation.get("available") else None,
+        "net_debt_coverage": {
+            "filled_quarters": net_debt_filled,
+            "missing_quarters": net_debt_missing,
+            "first_filled_quarter": net_debt_first,
+            "last_filled_quarter": net_debt_last,
+        },
+        "latest_quarter": latest_qkey,
+        "latest_total_debt": latest_quarter["metrics"].get("total_debt") if latest_quarter else None,
+        "latest_net_debt": latest_quarter.get("derived_metrics", {}).get("net_debt") if latest_quarter else None,
+        "financing_arm": data.get("financing_arm_flag", {}),
     }
 
 
@@ -248,9 +276,33 @@ def print_report(ticker: str, data: dict, summary: dict) -> None:
     else:
         print(f"Degerleme oranlari: veri yok - {valuation.get('reason')}")
 
+    net_debt_cov = summary.get("net_debt_coverage", {})
+    print(
+        f"net_debt (turetilmis, total_debt-cash): {net_debt_cov.get('filled_quarters')} dolu, "
+        f"{net_debt_cov.get('missing_quarters')} veri yok "
+        f"(ilk dolu: {net_debt_cov.get('first_filled_quarter') or '-'}, "
+        f"son dolu: {net_debt_cov.get('last_filled_quarter') or '-'})"
+    )
+    latest_total_debt = summary.get("latest_total_debt") or {}
+    print(
+        f"En son ceyrek ({summary.get('latest_quarter') or '-'}): "
+        f"total_debt = {latest_total_debt.get('value')} (etiket: {latest_total_debt.get('tag') or '-'}), "
+        f"net_debt = {summary.get('latest_net_debt')}"
+    )
+
     sector_flag = data.get("sector_flag", {})
     if sector_flag.get("is_financial_sector"):
         print(f"Sektor istisnasi: {sector_flag.get('reason')}")
+
+    financing_arm = summary.get("financing_arm", {})
+    if financing_arm.get("has_financing_arm"):
+        print(
+            f"Finansman kolu tespiti: EVET - sinyal={financing_arm.get('signal')}, "
+            f"eslesen={financing_arm.get('matched')!r}"
+        )
+        print(f"  Gerekce: {financing_arm.get('reason')}")
+    else:
+        print("Finansman kolu tespiti: HAYIR")
 
     peers = data.get("peers", {})
     if peers.get("status") != "ok":
