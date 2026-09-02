@@ -60,21 +60,39 @@ def fetch_companyfacts(cik: str) -> dict:
 
 
 def _load_fact_entries(companyfacts: dict, tag: str) -> list:
-    """Ford teshisinde bulundu: bir filer, standart gorunumlu bir kavrami
-    (orn. DebtAndCapitalLeaseObligations) us-gaap yerine KENDI ozel
-    taksonomi namespace'inde (companyfacts['facts'] altinda 'us-gaap'
-    disinda ayri bir anahtar, orn. sirketin ticker/CIK'ine dayali bir
-    extension namespace) AYNI YEREL ISIMLE tanimlayabiliyor - genelde
-    filer'in o donemde kullandigi taksonomi surumunde kavram tam
-    ihtiyaci karsilamadigi icin. companyfacts JSON'u bu degerleri
-    ISIMLERINE gore degil NAMESPACE'E gore gruplar; sadece 'us-gaap'e
-    bakmak, deger GERCEKTEN companyfacts'te dururken 'hic etiket
-    eslesmedi' sonucunu dogurur (Ford'da DebtAndCapitalLeaseObligations'in
-    75 kaydi olmasina ragmen total_debt'in devreye girmemesinin kok
-    nedeni buydu). Once 'us-gaap' denenir (standart, en guvenilir); orada
-    yoksa AYNI yerel etiket adi diger namespace'lerde aranir - deger
-    TAHMIN edilmiyor, sadece ayni SEC'in zaten yayinladigi kaydin
-    ARANDIGI yer genisletiliyor."""
+    """Genel bir savunma: bir filer, standart gorunumlu bir kavrami us-gaap
+    yerine KENDI ozel taksonomi namespace'inde (companyfacts['facts']
+    altinda 'us-gaap' disinda ayri bir anahtar) AYNI YEREL ISIMLE
+    tanimlamis olabilir - companyfacts JSON'u degerleri ISIMLERINE gore
+    degil NAMESPACE'E gore gruplar, bu yuzden sadece 'us-gaap'e bakmak boyle
+    bir durumda deger companyfacts'te dururken 'hic etiket eslesmedi'
+    sonucunu dogurabilir. Once 'us-gaap' denenir (standart, en guvenilir);
+    orada yoksa AYNI yerel etiket adi diger namespace'lerde aranir - deger
+    TAHMIN edilmiyor, sadece ayni SEC'in zaten yayinladigi kaydin ARANDIGI
+    yer genisletiliyor.
+
+    ONEMLI DUZELTME: bu, Ford'un net borc bosluguna dair ILK teshis
+    (namespace teorisi) idi ve KANITLANMADAN eklenmisti. Canli F verisiyle
+    calistirildiginda YANLIS cikti: DebtAndCapitalLeaseObligations Ford'da
+    zaten duz 'us-gaap' altinda cozuluyor (namespace sorunu yok - bu daha
+    once de tespit edilmisti). GERCEK kok neden: Ford bu etiketi (72 filed
+    kayit) SON KEZ 2020-12-31 icin raporlamis (FY2020 10-K, filed
+    2021-02-05) ve o tarihten sonra hicbir us-gaap namespace'inde (ne bu
+    etiket ne LongTermDebtNoncurrent/DebtCurrent/ShortTermBorrowings gibi
+    alternatifler) TEK PARCA bir konsolide toplam borc rakami hic
+    raporlamamis - sadece FinanceLeaseLiability* (sadece kiralama borcu,
+    toplam borcun kucuk bir kismi) ve nakit akisi kalemleri (Proceeds/
+    RepaymentsOf*Debt - "stok" degil "akis", Ford Credit'in surekli
+    yenilenen ticari senet/toptan fonlama hacmini yansitir, net borc
+    pozisyonunu degil) var. Bu, KOD HATASI degil - SEC'e sunulan XBRL
+    verisindeki GERCEK bir bosluk (muhtemelen Ford Credit finansman kolu
+    borcunun artik segment bazinda/boyutlu context'lerde raporlanip
+    companyfacts'in duz (boyutsuz) gorunumune hic yansimamasi). Bu yuzden
+    ilgili ceyrekler icin 'veri yok' DOGRU davranistir - tahmin/interpolasyon
+    yapilmadi (bkz. scripts/debug_ford_debt_tags_2021plus.py ciktisi).
+    Namespace genisletmesi genel bir savunma olarak KORUNDU (baska bir
+    ticker/etiket icin gecerli olabilir) ama Ford'un bu spesifik sorununu
+    COZMEDI."""
     facts = companyfacts.get("facts", {})
     concept = facts.get("us-gaap", {}).get(tag)
     namespace = "us-gaap"
@@ -114,9 +132,11 @@ def _qualify_tag(tag_name, namespace):
     """Etiket adini, us-gaap DISINDA bir namespace'ten geldiyse
     'namespace:EtiketAdi' olarak isaretler - us-gaap zaten varsayilan/beklenen
     namespace oldugu icin duz etiket adi degismeden kalir (mevcut testler ve
-    verify_data_layer.py ciktisi geriye donuk uyumlu kalir). Bu, Ford
-    teshisinde bulunan (bkz. _load_fact_entries docstring'i) bir etiketin
-    HANGI taksonomiden coz uldugunu dogrulama ozetinde gorunur kilar."""
+    verify_data_layer.py ciktisi geriye donuk uyumlu kalir). Etiketin
+    HANGI taksonomiden cozuldugunu dogrulama ozetinde gorunur kilar - bu
+    sayede "namespace farkli mi" sorusu bir daha teoriyle degil dogrudan
+    ciktidan cevaplanabilir (bkz. _load_fact_entries docstring'indeki
+    Ford duzeltmesi)."""
     if tag_name and namespace and namespace != "us-gaap":
         return f"{namespace}:{tag_name}"
     return tag_name

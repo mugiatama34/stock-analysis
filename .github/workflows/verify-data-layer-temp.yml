@@ -38,13 +38,6 @@ jobs:
       - name: Raporu render et
         run: python scripts/render_report.py "${{ steps.ticker.outputs.upper }}"
 
-      - name: Gecici - Ford borc etiketleri 2021+ ham veri teshisi
-        if: steps.ticker.outputs.upper == 'F'
-        env:
-          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
-          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
-        run: python scripts/debug_ford_debt_tags_2021plus.py
-
       - name: Sonuclari artifact olarak yukle
         if: always()
         uses: actions/upload-artifact@v4
