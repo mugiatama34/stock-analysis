@@ -3,24 +3,44 @@
 Bu asama sadece HTML iskeleti ve sayisal bolumler icindir - grafik yok,
 indeks sayfasi yok (bkz. CLAUDE.md > Rapor katmani).
 
-Gizleme mimarisi (CLAUDE.md): iki kural BAGIMSIZ calisir, veri katmani
+Gizleme mimarisi (CLAUDE.md): UC kural BAGIMSIZ calisir, veri katmani
 (pipeline/metrics) hicbir metrigi eksiltmez - gizleme SADECE burada,
 render sirasinda yapilir:
   - SEKTOR KURALI: sektor banka/sigorta/GYO ise borc ve marj temelli
     metrikler (bkz. _SECTOR_HIDDEN_METRICS) gizlenir.
+  - FINANSMAN KOLU KURALI: sirket kunyesinde finansman/kredi segmenti
+    ifadesi geciyorsa (bkz. metrics.classify_financing_arm) P/FCF ve
+    EV/EBITDA gizlenir (bkz. _FINANCING_ARM_HIDDEN_METRICS) - bu
+    sirketlerde finansman kolu nakit akisini ve borcu bozar, ama sirketin
+    kendi marj/borc oranlari (sektor kuralindan farkli olarak) hala
+    anlamlidir.
   - KAPSAM KURALI: bir ceyreklik-seri metrigi, bulunan ceyreklerin
     %30'undan azinda doluysa gizlenir (bkz. _COVERAGE_CHECKED_METRICS).
-Bir metrik ikisiyle de eslesirse sektor gerekcesi kullanilir (daha
-yapisal neden); gizlenen her metrigin hucresine "—" konur, gerekce
-cumlesi hucreye degil bolumun altina TEK SEFERLIK not olarak yazilir
-(bkz. _add_note/_render_notes) - ayni gerekce birden fazla metrigi
-gizlese bile tekrarlanmaz.
+Bir metrik birden fazla kuralla eslesirse SEKTOR -> FINANSMAN KOLU -> KAPSAM
+sirasiyla ilk eslesen gerekce kullanilir; gizlenen her metrigin hucresine
+"—" konur, gerekce cumlesi hucreye degil bolumun altina TEK SEFERLIK not
+olarak yazilir (bkz. _add_note/_render_notes) - ayni gerekce birden fazla
+metrigi gizlese bile tekrarlanmaz.
+
+Ayrica F/K ve P/FCF icin ayri bir durum var: TTM net kar (F/K) veya TTM FCF
+(P/FCF) <=0 ise bu bir "gizleme" degil - oran metrics.compute_valuation_ratios
+tarafindan HIC HESAPLANMAZ (bkz. o modulun docstring'i) ve "unavailable_reasons"
+altinda isaretlenir; render bunu "veri yok" ile karistirmadan "hesaplanamaz
+(zarar)" olarak gosterir (bkz. _render_valuation, _render_peers).
+
+Genel bir baska ayrim (tek bir kategoriye ozel degil, bkz.
+metrics.quarter_reporting_status): bir ceyreklik-seri metrigi son ceyrekte
+"veri yok" gorunuyorsa, bu hic veri bulunamadigi icin mi, yoksa sirket bu
+kalemi belirli bir ceyrekten sonra ARTIK AYRI RAPORLAMADIGI icin mi net
+degil - ikisi kullaniciya farkli anlam tasir. _cell bu ikisini _reporting_gap_label
+ile ayirir (orn. Ford total_debt/net_debt: DebtAndCapitalLeaseObligations son
+kez 2020-Q4 icin veri donmus, seri 2026-Q1'e kadar gidiyor).
 """
 
 import html
 import re
 
-from . import config, sector_labels
+from . import config, metrics, sector_labels
 
 _SUMMARY_TRUNCATE_LIMIT = 400
 _SENTENCE_END_RE = re.compile(r"[.!?](?=\s|$)")
@@ -40,6 +60,15 @@ _SECTOR_HIDDEN_METRICS = {
     "ev_ebitda",
     "p_fcf",
     "interest_coverage",
+}
+
+# FINANSMAN KOLU KURALI (CLAUDE.md > Metrikler > SEKTOR ISTISNASI ucuncu
+# kategori): SADECE nakit akisi/borc AGIRLIKLI degerleme oranlari gizlenir -
+# sirketin kendi marj/borc metrikleri (_SECTOR_HIDDEN_METRICS'in aksine)
+# hala anlamlidir, bu yuzden ayri ve daha dar bir kume.
+_FINANCING_ARM_HIDDEN_METRICS = {
+    "ev_ebitda",
+    "p_fcf",
 }
 
 # KAPSAM KURALI sadece ceyrek bazinda bir seri olarak var olan ve bu
@@ -89,8 +118,18 @@ def _sector_reason(key: str, data: dict):
     return None
 
 
+def _financing_arm_reason(key: str, data: dict):
+    flag = data.get("financing_arm_flag", {})
+    if key in _FINANCING_ARM_HIDDEN_METRICS and flag.get("has_financing_arm"):
+        return flag.get("reason")
+    return None
+
+
 def _hidden_reason(key: str, data: dict):
     reason = _sector_reason(key, data)
+    if reason:
+        return reason
+    reason = _financing_arm_reason(key, data)
     if reason:
         return reason
     if key in _COVERAGE_CHECKED_METRICS:
@@ -149,13 +188,35 @@ def _render_notes(notes: list) -> str:
     return f'<div class="notes">{paragraphs}</div>'
 
 
-def _cell(data: dict, key: str, raw_value, formatter, notes: list) -> str:
+def _valuation_unavailable_reason(data: dict, key: str):
+    """F/K veya P/FCF zarar yuzunden hic hesaplanmadiysa (bkz.
+    metrics.compute_valuation_ratios) bunun icin isaretlenmis "hesaplanamaz
+    (zarar)" metnini dondurur - "veri yok" ile karistirilmamali (biri
+    "elimizde deger yok", digeri "bu deger tanimsiz")."""
+    return data.get("valuation", {}).get("unavailable_reasons", {}).get(key)
+
+
+def _reporting_gap_label(data: dict, key: str) -> str:
+    """"veri yok" ile "sirket bunu artik ayri raporlamiyor" arasindaki genel
+    ayrimi metne cevirir (bkz. metrics.quarter_reporting_status, modul
+    docstring'i). Tek bir sektor/kategoriye ozel degildir - herhangi bir
+    ceyreklik-seri metrik icin gecerlidir."""
+    status = metrics.quarter_reporting_status(data.get("quarters", {}), key)
+    if status["status"] == "stopped":
+        return (
+            f"Şirket bu kalemi {status['last_filled_year']} sonrasında SEC "
+            "dosyalamalarında ayrı olarak raporlamıyor."
+        )
+    return "veri yok"
+
+
+def _cell(data: dict, key: str, raw_value, formatter, notes: list, missing_label: str = None) -> str:
     reason = _hidden_reason(key, data)
     if reason:
         _add_note(notes, reason)
         return '<span class="hidden-cell">—</span>'
     if raw_value is None:
-        return '<span class="missing">veri yok</span>'
+        return f'<span class="missing">{_esc(missing_label or _reporting_gap_label(data, key))}</span>'
     return formatter(raw_value)
 
 
@@ -270,7 +331,8 @@ def _render_valuation(data: dict) -> str:
             _add_note(notes, reason)
             body = '<span class="hidden-cell">—</span>'
         elif value is None:
-            body = '<span class="missing">veri yok</span>'
+            missing_text = _valuation_unavailable_reason(data, key) or "veri yok"
+            body = f'<span class="missing">{_esc(missing_text)}</span>'
         else:
             ctx = context.get(key, {"status": "no_data", "quarters_used": 0})
             if ctx["status"] == "ok":
@@ -345,6 +407,7 @@ def _render_peers(data: dict) -> str:
             own_value,
             _fmt_percent if valuation_key is None else _fmt_ratio,
             notes,
+            missing_label=_valuation_unavailable_reason(data, valuation_key) if valuation_key else None,
         )
         peer_cells = []
         for peer in peers:

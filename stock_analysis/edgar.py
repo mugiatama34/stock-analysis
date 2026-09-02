@@ -60,16 +60,89 @@ def fetch_companyfacts(cik: str) -> dict:
 
 
 def _load_fact_entries(companyfacts: dict, tag: str) -> list:
-    concept = companyfacts.get("facts", {}).get("us-gaap", {}).get(tag)
+    """Genel bir savunma: bir filer, standart gorunumlu bir kavrami us-gaap
+    yerine KENDI ozel taksonomi namespace'inde (companyfacts['facts']
+    altinda 'us-gaap' disinda ayri bir anahtar) AYNI YEREL ISIMLE
+    tanimlamis olabilir - companyfacts JSON'u degerleri ISIMLERINE gore
+    degil NAMESPACE'E gore gruplar, bu yuzden sadece 'us-gaap'e bakmak boyle
+    bir durumda deger companyfacts'te dururken 'hic etiket eslesmedi'
+    sonucunu dogurabilir. Once 'us-gaap' denenir (standart, en guvenilir);
+    orada yoksa AYNI yerel etiket adi diger namespace'lerde aranir - deger
+    TAHMIN edilmiyor, sadece ayni SEC'in zaten yayinladigi kaydin ARANDIGI
+    yer genisletiliyor.
+
+    ONEMLI DUZELTME: bu, Ford'un net borc bosluguna dair ILK teshis
+    (namespace teorisi) idi ve KANITLANMADAN eklenmisti. Canli F verisiyle
+    calistirildiginda YANLIS cikti: DebtAndCapitalLeaseObligations Ford'da
+    zaten duz 'us-gaap' altinda cozuluyor (namespace sorunu yok - bu daha
+    once de tespit edilmisti). GERCEK kok neden: Ford bu etiketi (72 filed
+    kayit) SON KEZ 2020-12-31 icin raporlamis (FY2020 10-K, filed
+    2021-02-05) ve o tarihten sonra hicbir us-gaap namespace'inde (ne bu
+    etiket ne LongTermDebtNoncurrent/DebtCurrent/ShortTermBorrowings gibi
+    alternatifler) TEK PARCA bir konsolide toplam borc rakami hic
+    raporlamamis - sadece FinanceLeaseLiability* (sadece kiralama borcu,
+    toplam borcun kucuk bir kismi) ve nakit akisi kalemleri (Proceeds/
+    RepaymentsOf*Debt - "stok" degil "akis", Ford Credit'in surekli
+    yenilenen ticari senet/toptan fonlama hacmini yansitir, net borc
+    pozisyonunu degil) var. Bu, KOD HATASI degil - SEC'e sunulan XBRL
+    verisindeki GERCEK bir bosluk (muhtemelen Ford Credit finansman kolu
+    borcunun artik segment bazinda/boyutlu context'lerde raporlanip
+    companyfacts'in duz (boyutsuz) gorunumune hic yansimamasi). Bu yuzden
+    ilgili ceyrekler icin 'veri yok' DOGRU davranistir - tahmin/interpolasyon
+    yapilmadi (bkz. scripts/debug_ford_debt_tags_2021plus.py ciktisi).
+    Namespace genisletmesi genel bir savunma olarak KORUNDU (baska bir
+    ticker/etiket icin gecerli olabilir) ama Ford'un bu spesifik sorununu
+    COZMEDI."""
+    facts = companyfacts.get("facts", {})
+    concept = facts.get("us-gaap", {}).get(tag)
+    namespace = "us-gaap"
+    if not concept:
+        for ns, concepts in facts.items():
+            if ns == "us-gaap":
+                continue
+            if tag in concepts:
+                concept = concepts[tag]
+                namespace = ns
+                break
     if not concept:
         return []
     units = concept.get("units", {})
+    # "_namespace" her kayda damgalanir - hangi taksonomiden geldigi
+    # (verify_data_layer.py'nin "tag" alaninda "namespace:Etiket" olarak
+    # gosterebilmesi icin, bkz. _qualify_tag) build_quarters'a kadar tasinir.
     for unit_key in ("USD", "USD/shares", "shares", "pure"):
         if unit_key in units:
-            return units[unit_key]
+            return [dict(e, _namespace=namespace) for e in units[unit_key]]
     for entries in units.values():
-        return entries
+        return [dict(e, _namespace=namespace) for e in entries]
     return []
+
+
+def has_fact(companyfacts: dict, tag: str) -> bool:
+    """Bir XBRL etiketinin (herhangi bir namespace'te, bkz. _load_fact_entries)
+    companyfacts'te en az bir kaydi olup olmadigini dondurur. Deger okumaz,
+    sadece VARLIGINI kontrol eder - metrics.classify_financing_arm'in ikinci
+    (yapisal) sinyali icin kullanilir: FinanceReceivables/NotesReceivableNet
+    gibi bir etiketin var olmasi, sirketin bir finansman/kredi kolu
+    isletmesine isaret eder."""
+    return bool(_load_fact_entries(companyfacts, tag))
+
+
+def _qualify_tag(tag_name, namespace):
+    """Etiket adini, us-gaap DISINDA bir namespace'ten geldiyse
+    'namespace:EtiketAdi' olarak isaretler - us-gaap zaten varsayilan/beklenen
+    namespace oldugu icin duz etiket adi degismeden kalir (mevcut testler ve
+    verify_data_layer.py ciktisi geriye donuk uyumlu kalir). Etiketin
+    HANGI taksonomiden cozuldugunu dogrulama ozetinde gorunur kilar - bu
+    sayede "namespace farkli mi" sorusu bir daha teoriyle degil dogrudan
+    ciktidan cevaplanabilir (bkz. _load_fact_entries docstring'indeki
+    Ford duzeltmesi)."""
+    if tag_name and namespace and namespace != "us-gaap":
+        return f"{namespace}:{tag_name}"
+    return tag_name
+
+
+
 
 
 def _dedupe_entries(entries: list) -> list:
@@ -404,7 +477,10 @@ def _resolve_instant_chain(
                 e["val"] = e["val"] - subtract_entry["val"]
                 by_end[end] = e
 
-    return {end: {"val": e["val"], "tag": e.get("_tag")} for end, e in by_end.items()}
+    return {
+        end: {"val": e["val"], "tag": _qualify_tag(e.get("_tag"), e.get("_namespace"))}
+        for end, e in by_end.items()
+    }
 
 
 def _resolve_instant_sum(companyfacts: dict, primary: str, components: list, wanted_ends: set) -> dict:
@@ -427,17 +503,18 @@ def _resolve_instant_sum(companyfacts: dict, primary: str, components: list, wan
             continue
         resolved = resolve_instant_values(raw, wanted_ends)
         for end, entry in resolved.items():
-            component_resolved.setdefault(end, []).append((tag, entry["val"]))
+            component_resolved.setdefault(end, []).append((tag, entry.get("_namespace"), entry["val"]))
 
     result = {}
     for end in wanted_ends:
         if end in primary_resolved:
-            result[end] = {"val": primary_resolved[end]["val"], "tag": primary}
+            entry = primary_resolved[end]
+            result[end] = {"val": entry["val"], "tag": _qualify_tag(primary, entry.get("_namespace"))}
         elif end in component_resolved:
             parts = component_resolved[end]
             result[end] = {
-                "val": sum(v for _, v in parts),
-                "tag": "+".join(t for t, _ in parts),
+                "val": sum(v for _, _, v in parts),
+                "tag": "+".join(_qualify_tag(t, ns) for t, ns, v in parts),
             }
     return result
 

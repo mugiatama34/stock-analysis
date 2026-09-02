@@ -3,12 +3,16 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from stock_analysis import config
 from stock_analysis.metrics import (
+    classify_financing_arm,
     compute_quarter_derived,
     compute_ttm,
     compute_valuation_context,
     compute_valuation_history,
+    compute_valuation_ratios,
     latest_quarter,
+    quarter_reporting_status,
 )
 
 
@@ -171,3 +175,230 @@ def test_valuation_context_status_thresholds():
 def test_valuation_context_unavailable_when_valuation_not_available():
     context = compute_valuation_context({"pe": [1.0] * 20}, {"available": False, "reason": "x"})
     assert context == {}
+
+
+def _ttm(revenue=1000, net_income=100, eps=1.0, fcf=200, ebitda=300):
+    return {
+        "available": True,
+        "period_end": "2024-03-31",
+        "revenue": revenue,
+        "net_income": net_income,
+        "eps_diluted": eps,
+        "fcf": fcf,
+        "ebitda": ebitda,
+    }
+
+
+def test_pe_unavailable_when_ttm_net_income_negative():
+    # Zarar durumunda F/K hesaplanmaz (negatif bir sayi yanlislikla "ucuz"
+    # gibi okunabiliyordu) - deger None kalir ve gerekce isaretlenir.
+    ttm = _ttm(net_income=-500, eps=-5.0)
+    valuation = compute_valuation_ratios(ttm, market_cap=1000, price=10.0, cash=50, total_debt=100)
+
+    assert valuation["pe"] is None
+    assert valuation["unavailable_reasons"]["pe"] == "hesaplanamaz (zarar)"
+    # Diger oranlar zarar kuralindan etkilenmemeli.
+    assert valuation["ps"] is not None
+
+
+def test_p_fcf_unavailable_when_ttm_fcf_negative():
+    ttm = _ttm(fcf=-100)
+    valuation = compute_valuation_ratios(ttm, market_cap=1000, price=10.0, cash=50, total_debt=100)
+
+    assert valuation["p_fcf"] is None
+    assert valuation["unavailable_reasons"]["p_fcf"] == "hesaplanamaz (zarar)"
+
+
+def test_pe_and_p_fcf_available_when_ttm_positive():
+    ttm = _ttm()
+    valuation = compute_valuation_ratios(ttm, market_cap=1000, price=10.0, cash=50, total_debt=100)
+
+    assert valuation["pe"] == 10.0
+    assert valuation["unavailable_reasons"]["pe"] is None
+    assert valuation["p_fcf"] is not None
+    assert valuation["unavailable_reasons"]["p_fcf"] is None
+
+
+def _val_quarter_with_income(period_end, revenue, net_income, eps, shares, ocf, capex):
+    metrics = dict(_BASE_METRICS)
+    metrics["revenue"] = _m(revenue)
+    metrics["net_income"] = _m(net_income)
+    metrics["eps_diluted"] = _m(eps)
+    metrics["diluted_shares"] = _m(shares)
+    metrics["operating_cash_flow"] = _m(ocf)
+    metrics["capex"] = _m(capex)
+    metrics["operating_income"] = _m(None)
+    metrics["depreciation_amortization"] = _m(None)
+    return {"period_end": period_end, "metrics": metrics}
+
+
+def test_valuation_history_excludes_loss_quarter_from_pe_series():
+    # Son ceyrekte TTM net kar negatife donuyor (zarar) - o ceyrek icin P/E
+    # None birakilmali ve seriye (dolayisiyla yuzdelik havuzuna) hic
+    # girmemeli.
+    quarters = {
+        "2023-Q1": _val_quarter_with_income("2023-03-31", 100, 10, 1.0, 50, 20, 0),
+        "2023-Q2": _val_quarter_with_income("2023-06-30", 100, 10, 1.0, 50, 20, 0),
+        "2023-Q3": _val_quarter_with_income("2023-09-30", 100, 10, 1.0, 50, 20, 0),
+        "2023-Q4": _val_quarter_with_income("2023-12-31", 100, -500, -10.0, 50, 20, 0),
+    }
+    price_history = [{"date": f"2023-{i * 3:02d}-28", "close": 20.0} for i in range(1, 5)]
+
+    history = compute_valuation_history(quarters, price_history)
+
+    assert history["pe"] == []
+
+
+def test_classify_financing_arm_detects_keyword_in_summary():
+    result = classify_financing_arm(
+        "Company operates an automotive segment and a Financial Services segment "
+        "that provides wholesale and retail financing to dealers and customers."
+    )
+    assert result["has_financing_arm"] is True
+    assert result["reason"]
+    assert result["signal"] == "business_summary"
+    assert result["matched"] == "financial services segment"
+
+
+def test_classify_financing_arm_false_when_no_keyword():
+    result = classify_financing_arm("A software company that builds cloud tools.")
+    assert result == {"has_financing_arm": False, "reason": None, "signal": None, "matched": None}
+
+
+def test_classify_financing_arm_handles_none_summary():
+    assert classify_financing_arm(None) == {
+        "has_financing_arm": False,
+        "reason": None,
+        "signal": None,
+        "matched": None,
+    }
+
+
+def test_classify_financing_arm_second_signal_from_xbrl_tag_when_text_silent():
+    # Kunye metni finansman kolundan hic bahsetmiyor (yfinance ozeti
+    # degisebilir/eksik olabilir) ama companyfacts'te FinanceReceivables
+    # etiketi var - yapisal sinyal metin sinyali olmadan da yeterli olmali.
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "FinanceReceivablesNetNoncurrent": {
+                    "units": {"USD": [{"end": "2023-03-31", "val": 1000, "form": "10-Q", "filed": "2023-05-01"}]}
+                }
+            }
+        }
+    }
+    result = classify_financing_arm("A generic industrial manufacturer.", companyfacts)
+
+    assert result["has_financing_arm"] is True
+    assert result["signal"] == "xbrl_tag"
+    assert result["matched"] == "FinanceReceivablesNetNoncurrent"
+
+
+def test_classify_financing_arm_text_signal_wins_over_xbrl_when_both_present():
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "NotesReceivableNet": {
+                    "units": {"USD": [{"end": "2023-03-31", "val": 1000, "form": "10-Q", "filed": "2023-05-01"}]}
+                }
+            }
+        }
+    }
+    result = classify_financing_arm(
+        "The company operates a financing segment for dealers.", companyfacts
+    )
+
+    assert result["signal"] == "business_summary"
+
+
+def test_classify_financing_arm_false_when_neither_signal_present():
+    companyfacts = {"facts": {"us-gaap": {}}}
+    result = classify_financing_arm("A generic industrial manufacturer.", companyfacts)
+
+    assert result["has_financing_arm"] is False
+
+
+def _rq(fiscal_year, fiscal_quarter, period_end, total_debt=None, cash=None):
+    metrics = dict(_BASE_METRICS)
+    metrics["total_debt"] = _m(total_debt)
+    metrics["cash_and_equivalents"] = _m(cash)
+    derived = {}
+    if total_debt is not None and cash is not None:
+        derived["net_debt"] = total_debt - cash
+    return {
+        "fiscal_year": fiscal_year,
+        "fiscal_quarter": fiscal_quarter,
+        "period_end": period_end,
+        "metrics": metrics,
+        "derived_metrics": derived,
+    }
+
+
+def test_quarter_reporting_status_no_data_when_never_filled():
+    quarters = {
+        "2023-Q1": _rq(2023, 1, "2023-03-31"),
+        "2023-Q2": _rq(2023, 2, "2023-06-30"),
+    }
+    assert quarter_reporting_status(quarters, "total_debt") == {"status": "no_data"}
+
+
+def test_quarter_reporting_status_ok_when_currently_filled():
+    quarters = {
+        "2023-Q1": _rq(2023, 1, "2023-03-31", total_debt=100, cash=10),
+        "2023-Q2": _rq(2023, 2, "2023-06-30", total_debt=110, cash=10),
+    }
+    status = quarter_reporting_status(quarters, "total_debt")
+    assert status["status"] == "ok"
+    assert status["last_filled_quarter"] == "2023-06-30"
+
+
+def test_quarter_reporting_status_ok_when_gap_under_threshold():
+    # Son 3 ceyrekte veri yok ama esik (4) altinda - rastlantisal/yakin
+    # zamanli bir bosluk olabilir, "kesildi" damgasi vurulmamali.
+    quarters = {
+        "2023-Q1": _rq(2023, 1, "2023-03-31", total_debt=100, cash=10),
+        "2023-Q2": _rq(2023, 2, "2023-06-30"),
+        "2023-Q3": _rq(2023, 3, "2023-09-30"),
+        "2023-Q4": _rq(2023, 4, "2023-12-31"),
+    }
+    status = quarter_reporting_status(quarters, "total_debt")
+    assert status["status"] == "ok"
+
+
+def test_quarter_reporting_status_stopped_when_gap_at_least_threshold():
+    # Ford deseni: total_debt/net_debt belirli bir ceyrekten sonra hic
+    # doldurulmamis, esigi (4 ceyrek) asan bir bosluk var.
+    quarters = {
+        "2020-Q4": _rq(2020, 4, "2020-12-31", total_debt=471, cash=100),
+        "2021-Q1": _rq(2021, 1, "2021-03-31"),
+        "2021-Q2": _rq(2021, 2, "2021-06-30"),
+        "2021-Q3": _rq(2021, 3, "2021-09-30"),
+        "2021-Q4": _rq(2021, 4, "2021-12-31"),
+    }
+    status = quarter_reporting_status(quarters, "total_debt")
+    assert status["status"] == "stopped"
+    assert status["last_filled_quarter"] == "2020-12-31"
+    assert status["last_filled_year"] == 2020
+    assert status["last_available_quarter"] == "2021-12-31"
+    assert status["gap_quarters"] == 4
+
+
+def test_quarter_reporting_status_applies_to_derived_metric_net_debt():
+    quarters = {
+        "2020-Q4": _rq(2020, 4, "2020-12-31", total_debt=471, cash=100),
+        "2021-Q1": _rq(2021, 1, "2021-03-31"),
+        "2021-Q2": _rq(2021, 2, "2021-06-30"),
+        "2021-Q3": _rq(2021, 3, "2021-09-30"),
+        "2021-Q4": _rq(2021, 4, "2021-12-31"),
+    }
+    status = quarter_reporting_status(quarters, "net_debt")
+    assert status["status"] == "stopped"
+    assert status["last_filled_quarter"] == "2020-12-31"
+
+
+def test_quarter_reporting_status_no_quarters_at_all():
+    assert quarter_reporting_status({}, "total_debt") == {"status": "no_data"}
+
+
+def test_reporting_gap_threshold_is_four():
+    assert config.REPORTING_GAP_QUARTERS_THRESHOLD == 4

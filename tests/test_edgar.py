@@ -381,6 +381,75 @@ def test_chain_with_fallback_sum_treats_missing_component_as_absent_not_error():
     assert resolved["2023-03-31"] == {"val": 4800, "tag": "long_term_debt"}
 
 
+def test_load_fact_entries_falls_back_to_non_us_gaap_namespace():
+    # Ford teshisi: bir filer standart gorunumlu bir kavrami (burada
+    # DebtAndCapitalLeaseObligations) us-gaap yerine kendi ozel taksonomi
+    # namespace'inde ("f", ticker'a dayali extension namespace) ayni yerel
+    # isimle raporlayabiliyor. companyfacts bunu ISME degil NAMESPACE'E
+    # gore gruplar - sadece 'us-gaap' icine bakmak, deger companyfacts'te
+    # GERCEKTEN dururken hic bulunamamasina yol aciyordu.
+    companyfacts = {
+        "facts": {
+            "dei": {"EntityCommonStockSharesOutstanding": {"units": {"shares": []}}},
+            "f": {
+                "DebtAndCapitalLeaseObligations": {
+                    "units": {"USD": [_instant("2023-03-31", 5300, "10-Q", "2023-05-01")]}
+                }
+            },
+        }
+    }
+    entries = edgar._load_fact_entries(companyfacts, "DebtAndCapitalLeaseObligations")
+    assert len(entries) == 1
+    assert entries[0]["val"] == 5300
+    assert entries[0]["_namespace"] == "f"
+
+
+def test_resolve_instant_chain_qualifies_tag_with_non_us_gaap_namespace():
+    # _resolve_instant_chain (chain_with_fallback'in de temeli) sonuc
+    # "tag" alaninda namespace'i "namespace:Etiket" olarak isaretlemeli -
+    # verify_data_layer.py dogrulama ozetinde HANGI taksonomiden geldigini
+    # gorunur kilmak icin (bkz. Ford teshisi).
+    companyfacts = {
+        "facts": {
+            "f": {
+                "DebtAndCapitalLeaseObligations": {
+                    "units": {"USD": [_instant("2023-03-31", 5300, "10-Q", "2023-05-01")]}
+                }
+            },
+        }
+    }
+    resolved = edgar._resolve_instant_chain(
+        companyfacts,
+        ["DebtAndCapitalLeaseObligations", "DebtLongtermAndShorttermCombinedAmount"],
+        {"2023-03-31"},
+    )
+    assert resolved["2023-03-31"] == {"val": 5300, "tag": "f:DebtAndCapitalLeaseObligations"}
+
+
+def test_load_fact_entries_prefers_us_gaap_over_other_namespace():
+    # Ayni yerel isim HEM us-gaap'te HEM baska bir namespace'te varsa,
+    # standart (us-gaap) her zaman kazanmali - extension namespace'ler
+    # sadece us-gaap'te hic yoksa devreye girer.
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "DebtAndCapitalLeaseObligations": {
+                    "units": {"USD": [_instant("2023-03-31", 700, "10-Q", "2023-05-01")]}
+                }
+            },
+            "f": {
+                "DebtAndCapitalLeaseObligations": {
+                    "units": {"USD": [_instant("2023-03-31", 999, "10-Q", "2023-05-01")]}
+                }
+            },
+        }
+    }
+    entries = edgar._load_fact_entries(companyfacts, "DebtAndCapitalLeaseObligations")
+    assert len(entries) == 1
+    assert entries[0]["val"] == 700
+    assert entries[0]["_namespace"] == "us-gaap"
+
+
 def test_chain_with_fallback_leaves_quarter_empty_when_neither_path_has_data():
     companyfacts = {"facts": {"us-gaap": {}}}
     resolved = edgar._resolve_instant_chain_with_fallback(

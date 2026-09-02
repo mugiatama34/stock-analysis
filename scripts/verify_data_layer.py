@@ -6,7 +6,7 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from stock_analysis import config, errors, pipeline  # noqa: E402
+from stock_analysis import config, errors, metrics, pipeline  # noqa: E402
 
 # Ceyrek sozluklerinde ("quarters[qkey]['metrics']") bulunan tum metrikler.
 # eps_diluted config'teki etiket zincirlerinde yok (artik hesaplaniyor,
@@ -151,6 +151,10 @@ def summarize(data: dict) -> dict:
             "last_filled_quarter": last_filled_quarter,
             "internal_gap_quarters": internal_gap_quarters,
             "continuity_warnings": continuity_warnings,
+            # "veri yok" ile "sirket bunu artik ayri raporlamiyor" ayrimi
+            # (genel kural, bkz. metrics.quarter_reporting_status) - Ford
+            # total_debt bunun somut ornegi (bkz. modul altindaki kullanim).
+            "reporting_status": metrics.quarter_reporting_status(quarters, metric),
         }
 
     all_continuity_warnings = [
@@ -158,6 +162,24 @@ def summarize(data: dict) -> dict:
         for metric, info in metrics_summary.items()
         for warning in info["continuity_warnings"]
     ]
+
+    # net_debt turetilmis bir metriktir (quarter["metrics"] icinde degil,
+    # quarter["derived_metrics"] icinde) - _QUARTER_METRICS listesinde yok,
+    # bu yuzden yukaridaki dongude izlenmiyor; Ford teshisi (total_debt'in
+    # devreye girip girmedigi) icin ayrica kapsam/son deger raporlanir.
+    net_debt_filled = net_debt_missing = 0
+    net_debt_first = net_debt_last = None
+    for qkey, quarter in ordered:
+        value = quarter.get("derived_metrics", {}).get("net_debt")
+        if value is not None:
+            net_debt_filled += 1
+            if net_debt_first is None:
+                net_debt_first = qkey
+            net_debt_last = qkey
+        else:
+            net_debt_missing += 1
+
+    latest_qkey, latest_quarter = ordered[-1] if ordered else (None, None)
 
     ttm = data.get("ttm", {})
     valuation = data.get("valuation", {})
@@ -167,6 +189,17 @@ def summarize(data: dict) -> dict:
         "continuity_warnings": all_continuity_warnings,
         "ttm_eps_diluted": ttm.get("eps_diluted") if ttm.get("available") else None,
         "valuation_pe": valuation.get("pe") if valuation.get("available") else None,
+        "net_debt_coverage": {
+            "filled_quarters": net_debt_filled,
+            "missing_quarters": net_debt_missing,
+            "first_filled_quarter": net_debt_first,
+            "last_filled_quarter": net_debt_last,
+            "reporting_status": metrics.quarter_reporting_status(quarters, "net_debt"),
+        },
+        "latest_quarter": latest_qkey,
+        "latest_total_debt": latest_quarter["metrics"].get("total_debt") if latest_quarter else None,
+        "latest_net_debt": latest_quarter.get("derived_metrics", {}).get("net_debt") if latest_quarter else None,
+        "financing_arm": data.get("financing_arm_flag", {}),
     }
 
 
@@ -215,6 +248,14 @@ def print_report(ticker: str, data: dict, summary: dict) -> None:
                 f"({w['new_tag']}={w['new_value']:,.0f}), etiket degisimiyle "
                 f"birlikte %{w['relative_jump'] * 100:.0f} sicrama"
             )
+        if info["reporting_status"]["status"] == "stopped":
+            rs = info["reporting_status"]
+            print(
+                f"{'':<28}  RAPORLAMA KESILDI: son dolu {rs['last_filled_quarter']} "
+                f"({rs['last_filled_year']}), veri {rs['last_available_quarter']}'e kadar "
+                f"gidiyor ({rs['gap_quarters']} ceyrek bosluk) - 'veri yok' degil, sirket "
+                "bu kalemi artik ayri raporlamiyor gibi gorunuyor."
+            )
     print()
 
     if summary["continuity_warnings"]:
@@ -248,9 +289,42 @@ def print_report(ticker: str, data: dict, summary: dict) -> None:
     else:
         print(f"Degerleme oranlari: veri yok - {valuation.get('reason')}")
 
+    net_debt_cov = summary.get("net_debt_coverage", {})
+    print(
+        f"net_debt (turetilmis, total_debt-cash): {net_debt_cov.get('filled_quarters')} dolu, "
+        f"{net_debt_cov.get('missing_quarters')} veri yok "
+        f"(ilk dolu: {net_debt_cov.get('first_filled_quarter') or '-'}, "
+        f"son dolu: {net_debt_cov.get('last_filled_quarter') or '-'})"
+    )
+    net_debt_status = net_debt_cov.get("reporting_status", {})
+    if net_debt_status.get("status") == "stopped":
+        print(
+            f"  RAPORLAMA KESILDI: son dolu {net_debt_status['last_filled_quarter']} "
+            f"({net_debt_status['last_filled_year']}), veri "
+            f"{net_debt_status['last_available_quarter']}'e kadar gidiyor "
+            f"({net_debt_status['gap_quarters']} ceyrek bosluk) - 'veri yok' degil, "
+            "sirket bu kalemi artik ayri raporlamiyor gibi gorunuyor."
+        )
+    latest_total_debt = summary.get("latest_total_debt") or {}
+    print(
+        f"En son ceyrek ({summary.get('latest_quarter') or '-'}): "
+        f"total_debt = {latest_total_debt.get('value')} (etiket: {latest_total_debt.get('tag') or '-'}), "
+        f"net_debt = {summary.get('latest_net_debt')}"
+    )
+
     sector_flag = data.get("sector_flag", {})
     if sector_flag.get("is_financial_sector"):
         print(f"Sektor istisnasi: {sector_flag.get('reason')}")
+
+    financing_arm = summary.get("financing_arm", {})
+    if financing_arm.get("has_financing_arm"):
+        print(
+            f"Finansman kolu tespiti: EVET - sinyal={financing_arm.get('signal')}, "
+            f"eslesen={financing_arm.get('matched')!r}"
+        )
+        print(f"  Gerekce: {financing_arm.get('reason')}")
+    else:
+        print("Finansman kolu tespiti: HAYIR")
 
     peers = data.get("peers", {})
     if peers.get("status") != "ok":

@@ -253,9 +253,52 @@ FINANCIAL_SECTOR_KEYWORDS = [
     "real estate investment trust",
 ]
 
+# "Finansman kolu olan sanayi sirketi" tespiti (CLAUDE.md > Metrikler >
+# SEKTOR ISTISNASI ucuncu kategori) icin sirket kunyesinde (yfinance
+# longBusinessSummary, kucuk harfe cevrilmis) aranan ifadeler - bkz.
+# metrics.classify_financing_arm docstring'i (neden oran degil metin
+# tabanli tespit secildigi icin gerekce orada).
+FINANCING_ARM_KEYWORDS = [
+    "financial services segment",
+    "financing segment",
+    "captive finance",
+    "credit and financing",
+    "financing operations",
+    "wholesale and retail financing",
+    "dealer financing",
+    "vehicle financing",
+    "equipment financing",
+]
+
+# Ikinci (yapisal) finansman kolu sinyali: kunye metni yfinance'in serbest
+# Ingilizce ozetine bagimli oldugu icin kirilgan (ozet degisirse veya
+# ifadeyi kullanmazsa sessizce calismayi birakir). Bu XBRL etiketleri
+# sirketin KENDI SEC dosyalamasindan gelen yapisal bir veridir - bir
+# finansman/kredi kolu tipik olarak musteri/bayi alacaklarini bu
+# kalemlerden biriyle raporlar. Ikisinden (metin veya etiket) HERHANGI
+# BIRI yeterlidir (bkz. metrics.classify_financing_arm).
+FINANCING_ARM_XBRL_TAGS = [
+    "FinanceReceivablesNetNoncurrent",
+    "FinanceReceivablesNetCurrent",
+    "FinanceReceivablesNet",
+    "NotesReceivableNet",
+]
+
 # Render katmani (CLAUDE.md > Rapor katmani > KAPSAM KURALI): bir metrik,
 # bulunan ceyreklerin bu oranindan azinda doluysa render'da gizlenir.
 RENDER_COVERAGE_THRESHOLD = 0.30
+
+# "Veri yok" ile "sirket bunu artik ayri raporlamiyor" ayrimi (genel kural,
+# tek bir sektor/kategoriye ozel degil - bkz. metrics.quarter_reporting_status).
+# Bir metrigin dolu oldugu SON ceyrek, verinin kapsadigi SON ceyrekten en az
+# bu kadar ceyrek geride ise "kesildi" sayilir. Ford total_debt/net_debt bunun
+# somut ornegi: DebtAndCapitalLeaseObligations son kez 2020-Q4 icin
+# raporlanmis, veri 2026-Q1'e kadar gidiyor (22+ ceyrek boşluk). 4 (1 yil),
+# tek bir ceyreklik rastlantisal bir bosluğu (gecikmis filing, veri kaynagi
+# gecikmesi) "kesildi" diye yanlis etiketlememek icin secilen bir esiktir -
+# ayni RENDER_COVERAGE_THRESHOLD gibi gercek veri uzerinde gozlemlenerek
+# ayarlanabilir.
+REPORTING_GAP_QUARTERS_THRESHOLD = 4
 
 # Degerleme yuzdelik konumu (CLAUDE.md > Metrikler > Degerleme) icin
 # kullanilan gecmis ceyrek penceresi: en fazla 20 (5 yil), yuzdelik
