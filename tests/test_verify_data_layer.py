@@ -17,7 +17,11 @@ def _quarter(period_end, **metrics):
         metric: _instant_entry(None, None) for metric in config.INSTANT_METRICS
     }
     entry_metrics.update(metrics)
-    return {"period_end": period_end, "metrics": entry_metrics}
+    return {
+        "period_end": period_end,
+        "fiscal_year": int(period_end[:4]),
+        "metrics": entry_metrics,
+    }
 
 
 def test_continuity_warning_raised_on_tag_switch_with_big_jump():
@@ -101,3 +105,49 @@ def test_summarize_surfaces_continuity_warnings_at_top_level():
     warning_without_metric = dict(summary["continuity_warnings"][0])
     del warning_without_metric["metric"]
     assert warning_without_metric == per_metric_warnings[0]
+
+
+def test_summarize_flags_stopped_reporting_for_total_debt():
+    # Ford deseni: total_debt son kez eski bir ceyrekte dolu, esikten fazla
+    # ceyrek bosluk var - summarize bunu "reporting_status" altinda
+    # raporlamali (verify_data_layer.py hem tablo hem net_debt satirinda
+    # bunu okur).
+    quarters = {
+        "2019-Q1": _quarter("2019-03-31", total_debt=_instant_entry(400, "DebtAndCapitalLeaseObligations")),
+        "2019-Q2": _quarter("2019-06-30", total_debt=_instant_entry(410, "DebtAndCapitalLeaseObligations")),
+        "2020-Q2": _quarter("2020-06-30"),
+        "2020-Q3": _quarter("2020-09-30"),
+        "2020-Q4": _quarter("2020-12-31"),
+        "2021-Q1": _quarter("2021-03-31"),
+    }
+    data = {"quarters": quarters}
+    summary = verify_data_layer.summarize(data)
+
+    status = summary["metrics"]["total_debt"]["reporting_status"]
+    assert status["status"] == "stopped"
+    assert status["last_filled_quarter"] == "2019-06-30"
+    assert status["last_filled_year"] == 2019
+    assert status["gap_quarters"] == 4
+
+
+def test_summarize_net_debt_coverage_includes_reporting_status():
+    quarters = {
+        qkey: q
+        for qkey, q in {
+            "2019-Q1": _quarter("2019-03-31"),
+            "2019-Q2": _quarter("2019-06-30"),
+            "2020-Q2": _quarter("2020-06-30"),
+            "2020-Q3": _quarter("2020-09-30"),
+            "2020-Q4": _quarter("2020-12-31"),
+            "2021-Q1": _quarter("2021-03-31"),
+        }.items()
+    }
+    for qkey in ("2019-Q1", "2019-Q2"):
+        quarters[qkey]["derived_metrics"] = {"net_debt": 300}
+
+    data = {"quarters": quarters}
+    summary = verify_data_layer.summarize(data)
+
+    status = summary["net_debt_coverage"]["reporting_status"]
+    assert status["status"] == "stopped"
+    assert status["last_filled_quarter"] == "2019-06-30"

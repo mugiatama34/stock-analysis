@@ -27,12 +27,20 @@ Ayrica F/K ve P/FCF icin ayri bir durum var: TTM net kar (F/K) veya TTM FCF
 tarafindan HIC HESAPLANMAZ (bkz. o modulun docstring'i) ve "unavailable_reasons"
 altinda isaretlenir; render bunu "veri yok" ile karistirmadan "hesaplanamaz
 (zarar)" olarak gosterir (bkz. _render_valuation, _render_peers).
+
+Genel bir baska ayrim (tek bir kategoriye ozel degil, bkz.
+metrics.quarter_reporting_status): bir ceyreklik-seri metrigi son ceyrekte
+"veri yok" gorunuyorsa, bu hic veri bulunamadigi icin mi, yoksa sirket bu
+kalemi belirli bir ceyrekten sonra ARTIK AYRI RAPORLAMADIGI icin mi net
+degil - ikisi kullaniciya farkli anlam tasir. _cell bu ikisini _reporting_gap_label
+ile ayirir (orn. Ford total_debt/net_debt: DebtAndCapitalLeaseObligations son
+kez 2020-Q4 icin veri donmus, seri 2026-Q1'e kadar gidiyor).
 """
 
 import html
 import re
 
-from . import config, sector_labels
+from . import config, metrics, sector_labels
 
 _SUMMARY_TRUNCATE_LIMIT = 400
 _SENTENCE_END_RE = re.compile(r"[.!?](?=\s|$)")
@@ -188,13 +196,27 @@ def _valuation_unavailable_reason(data: dict, key: str):
     return data.get("valuation", {}).get("unavailable_reasons", {}).get(key)
 
 
+def _reporting_gap_label(data: dict, key: str) -> str:
+    """"veri yok" ile "sirket bunu artik ayri raporlamiyor" arasindaki genel
+    ayrimi metne cevirir (bkz. metrics.quarter_reporting_status, modul
+    docstring'i). Tek bir sektor/kategoriye ozel degildir - herhangi bir
+    ceyreklik-seri metrik icin gecerlidir."""
+    status = metrics.quarter_reporting_status(data.get("quarters", {}), key)
+    if status["status"] == "stopped":
+        return (
+            f"Şirket bu kalemi {status['last_filled_year']} sonrasında SEC "
+            "dosyalamalarında ayrı olarak raporlamıyor."
+        )
+    return "veri yok"
+
+
 def _cell(data: dict, key: str, raw_value, formatter, notes: list, missing_label: str = None) -> str:
     reason = _hidden_reason(key, data)
     if reason:
         _add_note(notes, reason)
         return '<span class="hidden-cell">—</span>'
     if raw_value is None:
-        return f'<span class="missing">{_esc(missing_label or "veri yok")}</span>'
+        return f'<span class="missing">{_esc(missing_label or _reporting_gap_label(data, key))}</span>'
     return formatter(raw_value)
 
 

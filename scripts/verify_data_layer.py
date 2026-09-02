@@ -6,7 +6,7 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from stock_analysis import config, errors, pipeline  # noqa: E402
+from stock_analysis import config, errors, metrics, pipeline  # noqa: E402
 
 # Ceyrek sozluklerinde ("quarters[qkey]['metrics']") bulunan tum metrikler.
 # eps_diluted config'teki etiket zincirlerinde yok (artik hesaplaniyor,
@@ -151,6 +151,10 @@ def summarize(data: dict) -> dict:
             "last_filled_quarter": last_filled_quarter,
             "internal_gap_quarters": internal_gap_quarters,
             "continuity_warnings": continuity_warnings,
+            # "veri yok" ile "sirket bunu artik ayri raporlamiyor" ayrimi
+            # (genel kural, bkz. metrics.quarter_reporting_status) - Ford
+            # total_debt bunun somut ornegi (bkz. modul altindaki kullanim).
+            "reporting_status": metrics.quarter_reporting_status(quarters, metric),
         }
 
     all_continuity_warnings = [
@@ -190,6 +194,7 @@ def summarize(data: dict) -> dict:
             "missing_quarters": net_debt_missing,
             "first_filled_quarter": net_debt_first,
             "last_filled_quarter": net_debt_last,
+            "reporting_status": metrics.quarter_reporting_status(quarters, "net_debt"),
         },
         "latest_quarter": latest_qkey,
         "latest_total_debt": latest_quarter["metrics"].get("total_debt") if latest_quarter else None,
@@ -243,6 +248,14 @@ def print_report(ticker: str, data: dict, summary: dict) -> None:
                 f"({w['new_tag']}={w['new_value']:,.0f}), etiket degisimiyle "
                 f"birlikte %{w['relative_jump'] * 100:.0f} sicrama"
             )
+        if info["reporting_status"]["status"] == "stopped":
+            rs = info["reporting_status"]
+            print(
+                f"{'':<28}  RAPORLAMA KESILDI: son dolu {rs['last_filled_quarter']} "
+                f"({rs['last_filled_year']}), veri {rs['last_available_quarter']}'e kadar "
+                f"gidiyor ({rs['gap_quarters']} ceyrek bosluk) - 'veri yok' degil, sirket "
+                "bu kalemi artik ayri raporlamiyor gibi gorunuyor."
+            )
     print()
 
     if summary["continuity_warnings"]:
@@ -283,6 +296,15 @@ def print_report(ticker: str, data: dict, summary: dict) -> None:
         f"(ilk dolu: {net_debt_cov.get('first_filled_quarter') or '-'}, "
         f"son dolu: {net_debt_cov.get('last_filled_quarter') or '-'})"
     )
+    net_debt_status = net_debt_cov.get("reporting_status", {})
+    if net_debt_status.get("status") == "stopped":
+        print(
+            f"  RAPORLAMA KESILDI: son dolu {net_debt_status['last_filled_quarter']} "
+            f"({net_debt_status['last_filled_year']}), veri "
+            f"{net_debt_status['last_available_quarter']}'e kadar gidiyor "
+            f"({net_debt_status['gap_quarters']} ceyrek bosluk) - 'veri yok' degil, "
+            "sirket bu kalemi artik ayri raporlamiyor gibi gorunuyor."
+        )
     latest_total_debt = summary.get("latest_total_debt") or {}
     print(
         f"En son ceyrek ({summary.get('latest_quarter') or '-'}): "

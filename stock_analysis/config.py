@@ -288,6 +288,18 @@ FINANCING_ARM_XBRL_TAGS = [
 # bulunan ceyreklerin bu oranindan azinda doluysa render'da gizlenir.
 RENDER_COVERAGE_THRESHOLD = 0.30
 
+# "Veri yok" ile "sirket bunu artik ayri raporlamiyor" ayrimi (genel kural,
+# tek bir sektor/kategoriye ozel degil - bkz. metrics.quarter_reporting_status).
+# Bir metrigin dolu oldugu SON ceyrek, verinin kapsadigi SON ceyrekten en az
+# bu kadar ceyrek geride ise "kesildi" sayilir. Ford total_debt/net_debt bunun
+# somut ornegi: DebtAndCapitalLeaseObligations son kez 2020-Q4 icin
+# raporlanmis, veri 2026-Q1'e kadar gidiyor (22+ ceyrek boşluk). 4 (1 yil),
+# tek bir ceyreklik rastlantisal bir bosluğu (gecikmis filing, veri kaynagi
+# gecikmesi) "kesildi" diye yanlis etiketlememek icin secilen bir esiktir -
+# ayni RENDER_COVERAGE_THRESHOLD gibi gercek veri uzerinde gozlemlenerek
+# ayarlanabilir.
+REPORTING_GAP_QUARTERS_THRESHOLD = 4
+
 # Degerleme yuzdelik konumu (CLAUDE.md > Metrikler > Degerleme) icin
 # kullanilan gecmis ceyrek penceresi: en fazla 20 (5 yil), yuzdelik
 # hesaplamak icin asgari 12 ceyrek gerekir - daha azsa sadece ham oran

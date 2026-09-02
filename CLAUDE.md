@@ -108,6 +108,30 @@ yerine geçmez, bir metrik hangisiyle eşleşirse o gerekçeyle gizlenir
 
 Bu üç kural render katmanında UYGULANMIŞ durumda (bkz. stock_analysis/render.py).
 
+FİNANSMAN KOLU tespiti tek bir sinyale bağımlı değil: künye metni
+(yfinance longBusinessSummary) yfinance'in serbest İngilizce özetine
+dayandığı için kırılgan — özet değişirse veya bu ifadelerden hiçbirini
+kullanmazsa sessizce çalışmayı bırakır. Bu yüzden ikinci, yapısal bir
+sinyal de var: companyfacts'te FinanceReceivables*/NotesReceivableNet
+gibi bir XBRL etiketinin (herhangi bir kaydı) bulunması — şirketin kendi
+SEC dosyalamasından gelen yapısal veri, özet metninden bağımsız çalışır.
+İkisinden HERHANGİ BİRİ yeterlidir (bkz. metrics.classify_financing_arm).
+
+GENEL BİR AYRIM (tek bir kategoriye özel değil): bir çeyreklik-seri
+metrik son çeyrekte "veri yok" gösterecekse, önce şu ayrım yapılır —
+(a) metrik hiçbir çeyrekte hiç dolu olmadıysa "veri yok" aynen kalır;
+(b) metrik GEÇMİŞTE doluydu ama dolu olduğu son çeyrek, verinin
+kapsadığı son çeyrekten en az 4 çeyrek gerideyse, bunun yerine "Şirket
+bu kalemi <yıl> sonrasında SEC dosyalamalarında ayrı olarak
+raporlamıyor" gösterilir. Bu bir "gizleme" değil — sayı hâlâ
+gösterilmiyor, sadece "elimizde hiç veri yok" ile "şirket bunu artık
+ayrı raporlamıyor" farklı anlamlar taşıdığı için metin farklılaşıyor
+(bkz. metrics.quarter_reporting_status). Ford'da total_debt/net_debt
+bunun somut örneği: DebtAndCapitalLeaseObligations son kez 2020-Q4 için
+raporlanmış, veri 2026-Q1'e kadar gidiyor — bu bir kod hatası değil,
+SEC'e sunulan XBRL verisindeki gerçek bir boşluk. Bu ayrım dogrulama
+özetinde de (scripts/verify_data_layer.py) görünür.
+
 ## Tasarım
 Mobil öncelikli, dark mode varsayılan, light varyant.
 CSS değişken isimleri mugiatama34.github.io reposundaki index.html ile

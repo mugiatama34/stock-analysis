@@ -3,6 +3,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from stock_analysis import config
 from stock_analysis.metrics import (
     classify_financing_arm,
     compute_quarter_derived,
@@ -11,6 +12,7 @@ from stock_analysis.metrics import (
     compute_valuation_history,
     compute_valuation_ratios,
     latest_quarter,
+    quarter_reporting_status,
 )
 
 
@@ -314,3 +316,89 @@ def test_classify_financing_arm_false_when_neither_signal_present():
     result = classify_financing_arm("A generic industrial manufacturer.", companyfacts)
 
     assert result["has_financing_arm"] is False
+
+
+def _rq(fiscal_year, fiscal_quarter, period_end, total_debt=None, cash=None):
+    metrics = dict(_BASE_METRICS)
+    metrics["total_debt"] = _m(total_debt)
+    metrics["cash_and_equivalents"] = _m(cash)
+    derived = {}
+    if total_debt is not None and cash is not None:
+        derived["net_debt"] = total_debt - cash
+    return {
+        "fiscal_year": fiscal_year,
+        "fiscal_quarter": fiscal_quarter,
+        "period_end": period_end,
+        "metrics": metrics,
+        "derived_metrics": derived,
+    }
+
+
+def test_quarter_reporting_status_no_data_when_never_filled():
+    quarters = {
+        "2023-Q1": _rq(2023, 1, "2023-03-31"),
+        "2023-Q2": _rq(2023, 2, "2023-06-30"),
+    }
+    assert quarter_reporting_status(quarters, "total_debt") == {"status": "no_data"}
+
+
+def test_quarter_reporting_status_ok_when_currently_filled():
+    quarters = {
+        "2023-Q1": _rq(2023, 1, "2023-03-31", total_debt=100, cash=10),
+        "2023-Q2": _rq(2023, 2, "2023-06-30", total_debt=110, cash=10),
+    }
+    status = quarter_reporting_status(quarters, "total_debt")
+    assert status["status"] == "ok"
+    assert status["last_filled_quarter"] == "2023-06-30"
+
+
+def test_quarter_reporting_status_ok_when_gap_under_threshold():
+    # Son 3 ceyrekte veri yok ama esik (4) altinda - rastlantisal/yakin
+    # zamanli bir bosluk olabilir, "kesildi" damgasi vurulmamali.
+    quarters = {
+        "2023-Q1": _rq(2023, 1, "2023-03-31", total_debt=100, cash=10),
+        "2023-Q2": _rq(2023, 2, "2023-06-30"),
+        "2023-Q3": _rq(2023, 3, "2023-09-30"),
+        "2023-Q4": _rq(2023, 4, "2023-12-31"),
+    }
+    status = quarter_reporting_status(quarters, "total_debt")
+    assert status["status"] == "ok"
+
+
+def test_quarter_reporting_status_stopped_when_gap_at_least_threshold():
+    # Ford deseni: total_debt/net_debt belirli bir ceyrekten sonra hic
+    # doldurulmamis, esigi (4 ceyrek) asan bir bosluk var.
+    quarters = {
+        "2020-Q4": _rq(2020, 4, "2020-12-31", total_debt=471, cash=100),
+        "2021-Q1": _rq(2021, 1, "2021-03-31"),
+        "2021-Q2": _rq(2021, 2, "2021-06-30"),
+        "2021-Q3": _rq(2021, 3, "2021-09-30"),
+        "2021-Q4": _rq(2021, 4, "2021-12-31"),
+    }
+    status = quarter_reporting_status(quarters, "total_debt")
+    assert status["status"] == "stopped"
+    assert status["last_filled_quarter"] == "2020-12-31"
+    assert status["last_filled_year"] == 2020
+    assert status["last_available_quarter"] == "2021-12-31"
+    assert status["gap_quarters"] == 4
+
+
+def test_quarter_reporting_status_applies_to_derived_metric_net_debt():
+    quarters = {
+        "2020-Q4": _rq(2020, 4, "2020-12-31", total_debt=471, cash=100),
+        "2021-Q1": _rq(2021, 1, "2021-03-31"),
+        "2021-Q2": _rq(2021, 2, "2021-06-30"),
+        "2021-Q3": _rq(2021, 3, "2021-09-30"),
+        "2021-Q4": _rq(2021, 4, "2021-12-31"),
+    }
+    status = quarter_reporting_status(quarters, "net_debt")
+    assert status["status"] == "stopped"
+    assert status["last_filled_quarter"] == "2020-12-31"
+
+
+def test_quarter_reporting_status_no_quarters_at_all():
+    assert quarter_reporting_status({}, "total_debt") == {"status": "no_data"}
+
+
+def test_reporting_gap_threshold_is_four():
+    assert config.REPORTING_GAP_QUARTERS_THRESHOLD == 4

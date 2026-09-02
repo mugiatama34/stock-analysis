@@ -242,6 +242,65 @@ def _sorted_quarters(quarters: dict) -> list:
     return [v for _, v in items]
 
 
+def _quarter_metric_value(quarter: dict, key: str):
+    if key in quarter.get("metrics", {}):
+        return quarter["metrics"][key]["value"]
+    if key in quarter.get("derived_metrics", {}):
+        return quarter["derived_metrics"][key]
+    return None
+
+
+def quarter_reporting_status(quarters: dict, key: str) -> dict:
+    """Bir metrik icin "veri yok" gosterilirken GENEL bir ayrim yapar (tek
+    bir sektor/kategoriye ozel degil): hic veri bulunamadi mi, yoksa veri
+    GECMISTE vardi ama belirli bir ceyrekten sonra kesildi mi?
+
+    Somut ornek: Ford'da total_debt/net_debt - DebtAndCapitalLeaseObligations
+    (ve fallback etiketleri) son kez 2020-Q4 icin veri dondurmus, ama seri
+    2026-Q1'e kadar gidiyor. Bu "veri yok" degil, "sirket bu kalemi artik
+    ayri raporlamiyor" - iki durum kullaniciya farkli anlam tasir, bu yuzden
+    farkli metinle gosterilmeli (bkz. render._reporting_gap_label,
+    scripts/verify_data_layer.py).
+
+    Tespit: metrigin dolu oldugu SON ceyrek, verinin kapsadigi (herhangi bir
+    metrikte period_end'i olan) SON ceyrekten en az
+    config.REPORTING_GAP_QUARTERS_THRESHOLD ceyrek geride ise "stopped"
+    sayilir. Sayim POZISYONEL'dir (ceyrek TAKVIMINE degil, seri ICINDEKI
+    sıraya dayanir) - _coverage ve diger render kapsam kontrolleriyle
+    tutarli, ve seri zaten surekli/bosluksuz kabul edildigi surece dogru
+    sonuc verir.
+
+    Donen:
+      {"status": "no_data"} - metrik hicbir ceyrekte dolu degil.
+      {"status": "ok", "last_filled_quarter": ...} - ya en son ceyrekte dolu,
+        ya da esigin altinda (yakin zamanli, muhtemelen rastlantisal) bir
+        bosluk var.
+      {"status": "stopped", "last_filled_quarter", "last_filled_year",
+       "last_available_quarter", "gap_quarters"} - esigi asan bir bosluk
+       var, muhtemelen sirket bu kalemi artik ayri raporlamiyor."""
+    ordered = _sorted_quarters(quarters)
+    if not ordered:
+        return {"status": "no_data"}
+
+    filled_indices = [i for i, q in enumerate(ordered) if _quarter_metric_value(q, key) is not None]
+    if not filled_indices:
+        return {"status": "no_data"}
+
+    last_filled_idx = filled_indices[-1]
+    last_filled = ordered[last_filled_idx]
+    gap = (len(ordered) - 1) - last_filled_idx
+
+    if gap >= config.REPORTING_GAP_QUARTERS_THRESHOLD:
+        return {
+            "status": "stopped",
+            "last_filled_quarter": last_filled["period_end"],
+            "last_filled_year": last_filled["fiscal_year"],
+            "last_available_quarter": ordered[-1]["period_end"],
+            "gap_quarters": gap,
+        }
+    return {"status": "ok", "last_filled_quarter": last_filled["period_end"]}
+
+
 def _trailing_flow_sum(ordered_quarters: list, end_idx: int, metric: str):
     """ordered_quarters[end_idx-3..end_idx] (4 ceyrek) icin metric'in
     toplamini dondurur; pencere tam degilse veya herhangi bir ceyrekte

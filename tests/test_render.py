@@ -223,6 +223,48 @@ def test_financing_arm_hides_p_fcf_and_ev_ebitda_but_not_margins():
     assert "10.00" in output
 
 
+def test_net_debt_shows_stopped_reporting_message_not_generic_missing():
+    # Ford deseni: total_debt/net_debt belirli bir ceyrekten sonra (>=4
+    # ceyrek once) hic doldurulmamis - genel "veri yok" yerine sirketin
+    # bunu artik ayri raporlamadigini soyleyen bir mesaj gosterilmeli.
+    # Yeterli sayida dolu ceyrek de var (KAPSAM KURALI %30 esigini gecmek
+    # icin) - aksi halde hucre "veri yok" yerine sektor/kapsam kurali
+    # tarafindan zaten gizlenir, iki farkli mekanizma karisir.
+    quarters = {
+        "2019-Q1": _quarter(2019, 1, "2019-03-31", total_debt=400, cash_and_equivalents=90),
+        "2019-Q2": _quarter(2019, 2, "2019-06-30", total_debt=410, cash_and_equivalents=90),
+        "2019-Q3": _quarter(2019, 3, "2019-09-30", total_debt=420, cash_and_equivalents=95),
+        "2019-Q4": _quarter(2019, 4, "2019-12-31", total_debt=430, cash_and_equivalents=95),
+        "2020-Q1": _quarter(2020, 1, "2020-03-31", total_debt=450, cash_and_equivalents=98),
+        "2020-Q2": _quarter(2020, 2, "2020-06-30", total_debt=471, cash_and_equivalents=100),
+        "2020-Q3": _quarter(2020, 3, "2020-09-30"),
+        "2020-Q4": _quarter(2020, 4, "2020-12-31"),
+        "2021-Q1": _quarter(2021, 1, "2021-03-31"),
+        "2021-Q2": _quarter(2021, 2, "2021-06-30"),
+    }
+    data = _base_data(quarters=quarters)
+
+    output = render.render_report(data, generated_at="2026-08-31")
+
+    assert "Şirket bu kalemi 2020 sonrasında SEC dosyalamalarında ayrı olarak raporlamıyor." in output
+    assert ">veri yok<" not in output.split("Son çeyrek özeti")[1]
+
+
+def test_net_debt_shows_generic_missing_when_gap_under_threshold():
+    quarters = {
+        "2021-Q1": _quarter(2021, 1, "2021-03-31", total_debt=471, cash_and_equivalents=100),
+        "2021-Q2": _quarter(2021, 2, "2021-06-30", total_debt=480, cash_and_equivalents=100),
+        "2021-Q3": _quarter(2021, 3, "2021-09-30"),
+        "2021-Q4": _quarter(2021, 4, "2021-12-31"),
+    }
+    data = _base_data(quarters=quarters)
+
+    output = render.render_report(data, generated_at="2026-08-31")
+
+    assert "artık ayrı olarak raporlamıyor" not in output
+    assert ">veri yok<" in output.split("Son çeyrek özeti")[1]
+
+
 def test_sector_and_industry_translated_to_turkish():
     data = _base_data(sector="Technology", industry="Software - Application")
 
